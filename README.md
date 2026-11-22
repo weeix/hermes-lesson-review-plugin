@@ -1,86 +1,138 @@
 # lesson-review
 
-Lesson review is a review pane for pending writes: the memory and skill changes Hermes stages
-when `write_approval` is on. Lists use
-metadata only; the review dialog shows the exact proposal and per-op diffs. The
-plugin uses the public core list/preview/decide service and does not read queue files in production.
-Older Hermes builds without that service show an unavailable state.
+With `write_approval` turned on, Hermes doesn't write memory or skill changes straight away. It stages
+them as pending writes and waits for you. This plugin adds a pane to Hermes Desktop that lists those
+pending writes. Click one to open the review dialog, which shows the exact proposal with a diff for
+each operation, then approve or reject it.
 
-**Approve and Reject are on by default.** Each profile can make the dialog read-only with the
-`allow_decisions` setting (`hermes plugins config lesson-review`, or Desktop Settings → Plugins), stored
-at `plugins.entries.lesson-review.settings.allow_decisions`; the legacy
-`plugins.entries.lesson-review.config.allow_decisions` is read when `settings` has no value. Only a
-boolean `true` (or no value) allows decisions, and a config Hermes cannot read turns them off.
-`LESSON_REVIEW_ALLOW_DECISIONS=0` (or `false`, `no`, `off`) on the Hermes backend turns them off for
-every profile; no environment variable turns them on. The setting is separate from each subsystem's
-staging flag, and turning a staging flag off does not discard pending proposals.
+The list shows metadata only. Full content appears only in the review dialog.
 
-## Adapter
+## Requirements
 
-`LESSON_REVIEW_ADAPTER=core` (default) uses the core service in the request's authorized profile.
-`LESSON_REVIEW_ADAPTER=fake` serves fixture records for development.
+- Hermes Agent with the `tools.write_review_api` service
+  ([PR #158550](https://github.com/NousResearch/hermes-agent/pull/158550)). On an older build the pane
+  says the service is unavailable.
+- Hermes Desktop, or the Webapp.
+- `memory.write_approval` or `skills.write_approval` set to `true` in the profile's config.
+  Otherwise nothing gets staged and the pane stays empty.
 
-The production adapter imports `tools.write_review_api` symbols registered in the core public
-plugin API. `POST /pending/{kind}/{id}/{approve|reject}` takes `{"expect": <unchanged preview value>}`
-and returns a semantic resolver outcome. HTTP 200 alone does not mean an approval applied.
-
-Routes refuse a malformed `kind` or `pending_id` with 400 before calling core. A pending store core
-refuses is a 409, not an empty queue.
-
-## Names (Desktop Plugins page)
-
-Desktop shows the agent row's manifest name (`plugin.yaml` `name`) on the server card. A desktop
-half shows its own `name` on the desktop card, and on the joined card when the two pair. Pairing
-needs the desktop copy's `.hermes-package.json` marker (written by the install dialog or the
-reconcile pass). A hand-copied `plugin.js` has no marker and stays a separate card.
-
-This plugin uses one name, `lesson-review`, in `plugin.yaml`, `dashboard/manifest.json` and
-`desktop/plugin.js`. The pane heading reads "Lesson review"; the staged items themselves are still
-"pending writes" (badge, empty state, dialog title). `tests/test_manifest.py` and
-`tests/render/run.mjs` check the three names agree. The server half has no display label that the
-Plugins page reads: `plugin.yaml` `label` is accepted and unused, and dashboard `label` only shows for
-dashboard plugins that have no agent row.
-
-## Install into a Hermes home (development)
+## Install
 
 ```bash
-ln -s "$(pwd)" "$HERMES_HOME/plugins/lesson-review"    # unified package, linked checkout
-hermes plugins enable lesson-review                    # plugins.enabled: [lesson-review]
-hermes gateway restart                                 # or restart the headless backend
+hermes plugins install weeix/hermes-lesson-review --enable
+hermes gateway restart        # or restart the headless backend
 ```
 
-The desktop half is copied to `$HERMES_HOME/desktop-plugins/lesson-review/` by the reconcile pass
-(Desktop, or the Webapp's host). It is opt-in: turn it on in Capabilities > Plugins.
+Then open Desktop, go to Capabilities > Plugins and turn on `lesson-review`. The desktop half is
+opt-in, so the pane won't show up until you do.
+
+For development, link a checkout instead:
+
+```bash
+ln -s "$(pwd)" "$HERMES_HOME/plugins/lesson-review"
+hermes plugins enable lesson-review
+hermes gateway restart
+```
+
+Desktop (or the Webapp's host) copies the desktop half into
+`$HERMES_HOME/desktop-plugins/lesson-review/`. You still turn it on in Capabilities > Plugins.
+
+## Config
+
+Approve and Reject are on by default. To make the dialog read-only for a profile, set
+`allow_decisions` to `false`, either with `hermes plugins config lesson-review` or in Desktop
+Settings > Plugins. It ends up in the profile's `config.yaml`:
+
+```yaml
+plugins:
+  entries:
+    lesson-review:
+      settings:
+        allow_decisions: false
+```
+
+A few details:
+
+- If `settings` has no `allow_decisions`, the older `plugins.entries.lesson-review.config.allow_decisions`
+  is used instead.
+- Only a boolean `true`, or no value at all, allows decisions. Anything else turns them off, and so
+  does a config file Hermes can't read.
+- Setting `LESSON_REVIEW_ALLOW_DECISIONS=0` (or `false`, `no`, `off`) on the Hermes backend turns
+  decisions off for every profile. No environment variable can turn them on.
+- This setting is separate from `write_approval`. Turning `write_approval` off doesn't throw away
+  writes that are already pending.
+
+## Disclosure
+
+For catalog reviewers:
+
+- It registers no agent tools, hooks or middleware. `register()` in `__init__.py` is empty.
+- It reads and decides pending writes only through the public `tools.write_review_api` service
+  (`list_writes`, `preview_write`, `decide_write`). It never opens the pending queue files itself.
+  Approve and Reject go through Hermes' own resolver, which does the actual write.
+- It makes no external network calls. The desktop half only talks to this plugin's own routes
+  through the plugin SDK.
+- It holds no credentials.
+- Hermes checks the session token before any of the plugin's routes run, and each request sees only
+  the profile it is scoped to. Unauthenticated requests get a 401 (covered by
+  `tests/test_mounted.py`).
+
+## API
+
+`LESSON_REVIEW_ADAPTER=core` (the default) uses the core service for the request's profile.
+`LESSON_REVIEW_ADAPTER=fake` serves fixture records for development and can't approve or reject.
+
+`POST /pending/{kind}/{id}/{approve|reject}` takes `{"expect": <the preview's expect value, unchanged>}`
+and returns the resolver's outcome. Check the outcome: an HTTP 200 alone doesn't mean the write was
+applied.
+
+A malformed `kind` or `pending_id` gets a 400 before core is called. If core refuses the profile's
+pending store, you get a 409, not an empty list.
+
+## Names on the Desktop Plugins page
+
+Desktop puts the `plugin.yaml` `name` on the server card and the desktop half's own `name` on the
+desktop card. When the two halves pair, the joined card uses the desktop name. Pairing needs the
+`.hermes-package.json` marker that the install dialog or the reconcile pass writes. If you copy
+`plugin.js` by hand, there's no marker and it shows up as a separate card.
+
+This plugin uses `lesson-review` everywhere: `plugin.yaml`, `dashboard/manifest.json` and
+`desktop/plugin.js`. `tests/test_manifest.py` and `tests/render/run.mjs` check that the names match.
+The pane heading says "Lesson review", but the items are still called "pending writes" (badge, empty
+state, dialog title). The server half has no display label the Plugins page reads. A `label` in
+`plugin.yaml` is accepted but ignored, and the dashboard `label` only shows for dashboard plugins
+with no agent row.
 
 ## Running the checks
 
 ```bash
 uv venv --python 3.14 .venv && uv pip install --python .venv/bin/python pytest fastapi httpx
-.venv/bin/python -m pytest -q                          # mounted tests skip without HERMES_SRC
-HERMES_SRC=/path/to/hermes-agent HERMES_PYTHON=/path/to/hermes/python .venv/bin/python -m pytest -q
+env -u PYTHONPATH .venv/bin/python -m pytest -q    # mounted tests skip without HERMES_SRC
+env -u PYTHONPATH HERMES_SRC=/path/to/hermes-agent HERMES_PYTHON=/path/to/hermes/python \
+    .venv/bin/python -m pytest -q
 
-hermes plugins validate .                              # from a Hermes checkout/venv
+hermes plugins validate .
 
-# render smoke test (needs node + react; no server):
+# render smoke test (needs node; no server)
 (cd tests/render && npm install)
-.venv/bin/python tests/render/make-snapshot.py                    # plugin routes, fixture records
-
+.venv/bin/python tests/render/make-snapshot.py      # plugin routes over fixture records
 (cd tests/render && WR_SNAPSHOT=.generated/snapshot.json node run.mjs)
-(cd tests/render && node interact.mjs)                             # dialog interactions: jsdom + the host's react-query
-(cd tests/render && node focus.mjs)                                # focus on open/close: jsdom + the host's Radix dialog
-# or against a live backend (needs a staged skills batch and a memory record):
+(cd tests/render && node interact.mjs)              # dialog interactions: jsdom + the host's react-query
+(cd tests/render && node focus.mjs)                 # focus on open/close: jsdom + the host's Radix dialog
+
+# or against a live backend with a staged skills batch and a memory record
 (cd tests/render && WR_TOKEN=... WR_BASE=http://127.0.0.1:9431 node run.mjs)
 ```
 
-`HERMES_PYTHON` must be an interpreter that imports Hermes' dependencies (FastAPI, httpx, PyYAML).
-The mounted tests write only under pytest's temp dir: each scenario pins `HOME` and `HERMES_HOME`
-to a throwaway tree, and the real `~/.hermes` is never used.
+`HERMES_PYTHON` has to be an interpreter that can import Hermes' dependencies (FastAPI, httpx,
+PyYAML). The mounted tests only write under pytest's temp dir. Each scenario points `HOME` and
+`HERMES_HOME` at a throwaway tree, so your real `~/.hermes` is never touched.
 
 ## Known limits
 
-- Decisions go through the core resolver; the plugin never writes to the pending store itself.
-- Records are shown in full. Memory content is user data; the pane shows it to anyone the Hermes
-  backend admits.
-- The needs-review banner has not been seen in a native Desktop run yet.
-- Profile switching has not been exercised in a real Desktop. The profile scoping on the server is
-  covered by `test_mounted.py`.
+- Proposals are shown in full, and memory content is user data. Anyone who can authenticate to the
+  Hermes backend can pick a profile with `?profile=` and read its pending writes, as long as that
+  profile has the plugin enabled.
+- The needs-review banner hasn't been seen in a native Desktop run yet.
+- Profile switching hasn't been tried in a real Desktop. Server-side profile scoping is covered by
+  `tests/test_mounted.py`.
