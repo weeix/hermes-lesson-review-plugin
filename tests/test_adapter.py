@@ -58,7 +58,14 @@ def test_preview_reshapes_core_ops_for_the_pane():
     assert (single["is_batch"], single["op_count"], single["action"]) == (False, 1, "replace")
     assert single["created_at"] == 1_000_000.0 - 2400  # core's preview carries the staging time
     [op] = single["ops"]
-    assert (op["index"], op["subject"], op["diff"]) == (1, "memory", None)
+    assert (op["index"], op["subject"]) == (1, "memory")
+    assert op["diff"] == (
+        "--- before\n"
+        "+++ after\n"
+        "@@ -1 +1 @@\n"
+        "-Staging DB: pg-staging-1 (old cluster, retiring)\n"
+        "+Staging DB: pg-staging-2 (new cluster)"
+    )
     assert op["fields"] == {"matched_entry": "Staging DB: pg-staging-1 (old cluster, retiring)",
                             "old_text": "Staging DB: pg-staging-1", "content": "Staging DB: pg-staging-2 (new cluster)"}
     batch = _fake().get_preview("skills", "5c1e0004")
@@ -89,3 +96,28 @@ def test_store_errors_become_store_refused():
                  lambda a: a.decide("memory", "0a1d0001", "reject", {})):
         with pytest.raises(adapter.StoreRefusedError):
             call(Broken())
+
+
+def test_memory_replace_diffs_the_pinned_entry_and_leaves_add_remove_plain():
+    fake = _fake()
+    assert fake.get_preview("memory", "0a1d0001")["ops"][0]["diff"] is None
+    assert fake.get_preview("memory", "0a1d0003")["ops"][0]["diff"] is None
+
+    replace, remove = fake.get_preview("memory", "0a1d0004")["ops"]
+    assert replace["action"] == "replace" and replace["diff"] == (
+        "--- before\n+++ after\n@@ -1 +1 @@\n-RULE B: ci per HEAD.\n+CI is per-head.")
+    assert remove["action"] == "remove" and remove["diff"] is None
+
+    def diff(**op):
+        return adapter._op_diff("memory", {"action": "replace", **op})
+
+    # The whole entry is replaced, by content as the store writes it (stripped).
+    assert diff(matched_entry="alpha\nbeta", old_text="beta", content="alpha\ngamma  \n") == (
+        "--- before\n+++ after\n@@ -1,2 +1,2 @@\n alpha\n-beta\n+gamma")
+    # Lines split on newlines only, as the pane renders them.
+    assert diff(matched_entry="a\u2028b", old_text="a", content="c") == "--- before\n+++ after\n@@ -1 +1 @@\n-a\u2028b\n+c"
+    # Unpinned: core refuses it, and old_text is only a span of the entry, so no diff.
+    assert diff(matched_entry=None, old_text="beta", content="gamma") is None
+    assert diff(matched_entry="same", old_text="same", content="same") is None
+    core_diff = "--- core\n+++ core\n@@ -1 +1 @@\n-a\n+b"
+    assert diff(matched_entry="a", old_text="a", content="b", diff=core_diff) == core_diff

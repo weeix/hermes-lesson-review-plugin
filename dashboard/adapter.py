@@ -8,6 +8,7 @@ and the render tests; the routes never let it decide.
 
 from __future__ import annotations
 
+import difflib
 import re
 import time
 from contextlib import contextmanager
@@ -37,6 +38,28 @@ def _store_errors(message: str):
         raise StoreRefusedError(message) from exc
 
 
+def _op_diff(kind: str, op: dict[str, Any]) -> Optional[str]:
+    """Core's diff for the op, or for a memory ``replace`` one built here: the pinned entry
+    against what replaces it.
+
+    ``MemoryStore.replace`` overwrites the whole entry it locates with ``content.strip()``, and
+    core applies a staged replace only to its pinned ``matched_entry``. Without a pin core refuses
+    the write (preview status ``conflict``), so there is no diff: ``old_text`` is only a span of
+    the entry, and diffing it would hide the text the replace drops. Lines split on ``\\n`` only,
+    as ``DiffField`` in desktop/plugin.js does.
+    """
+    if op.get("diff"):
+        return op["diff"]
+    if kind != "memory" or op.get("action") != "replace":
+        return None
+    before, after = op.get("matched_entry"), op.get("content")
+    if not (isinstance(before, str) and before and isinstance(after, str)):
+        return None
+    lines = difflib.unified_diff(before.split("\n"), after.strip().split("\n"),
+                                 fromfile="before", tofile="after", lineterm="")
+    return "\n".join(lines) or None
+
+
 class CoreAdapter:
     name = "core"
 
@@ -64,7 +87,7 @@ class CoreAdapter:
         return {**result, "kind": kind, "is_batch": len(ops) > 1, "op_count": len(ops),
                 "action": ops[0]["action"] if len(ops) == 1 else "batch" if ops else "write",
                 "ops": [{"index": i, "action": op["action"], "subject": op.get("name") or op.get("target"),
-                         "fields": {k: op[k] for k in _OP_FIELDS if k in op}, "diff": op.get("diff")}
+                         "fields": {k: op[k] for k in _OP_FIELDS if k in op}, "diff": _op_diff(kind, op)}
                         for i, op in enumerate(ops, 1)]}
 
     def decide(self, kind, pending_id, decision, expect):
