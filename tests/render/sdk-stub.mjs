@@ -10,6 +10,8 @@
 // Tailwind classes are NOT reproduced.
 import { jsx, jsxs } from 'react/jsx-runtime'
 
+export const KEYBINDS_AREA = 'keybinds'
+export const PALETTE_AREA = 'palette'
 export const PANES_AREA = 'panes'
 export const STATUSBAR_AREAS = { right: 'statusBar.right' }
 // notify() records the toast; the real host shows it in the notification stack.
@@ -47,6 +49,10 @@ export const host = {
   },
   paneVisibility() {
     return { get: () => globalThis.__WR_PANE_VISIBLE__ ?? true }
+  },
+  // Records the pane ids it was asked to reveal.
+  revealPane(paneId) {
+    ;(globalThis.__WR_REVEALS__ ||= []).push(paneId)
   },
   // Listeners by event type in `__WR_LISTENERS__`, so a test can emit gateway events.
   onEvent(type, handler) {

@@ -123,6 +123,16 @@ const OFF_TEXT = 'Lesson review is turned off on this Hermes. Turn it on in Capa
   const contributions = register(plugin)
   check('register: pane contribution in panes area', Boolean(contributions.find(c => c.area === 'panes')))
   check('register: badge contribution in statusBar.right', Boolean(contributions.find(c => c.area === 'statusBar.right')))
+  const keybinds = contributions.filter(c => c.area === 'keybinds').map(c => c.data)
+  const palette = contributions.filter(c => c.area === 'palette').map(c => c.data)
+  check('register: Show and Refresh keybind actions, both unbound by default',
+    JSON.stringify(keybinds.map(k => [k.id, k.defaults]).sort())
+      === JSON.stringify([['lesson-review.refresh', []], ['lesson-review.showPane', []]])
+    && keybinds.every(k => typeof k.run === 'function' && k.label), JSON.stringify(keybinds))
+  check('register: a palette row per action, naming it for the chord hint',
+    JSON.stringify(palette.map(p => p.action).sort()) === JSON.stringify(['lesson-review.refresh', 'lesson-review.showPane'])
+    && palette.every(p => p.label && typeof p.run === 'function' && typeof p.detail === 'function'),
+    JSON.stringify(palette.map(p => p.id)))
   check('plugin id, and off until the user turns it on', plugin.id === 'lesson-review' && plugin.defaultEnabled === false)
   const yamlName = readFileSync(join(HERE, '..', '..', 'plugin.yaml'), 'utf8').match(/^name:\s*(\S+)\s*$/m)?.[1]
   check('desktop name equals the server package name (plugin.yaml)', plugin.name === yamlName && yamlName === 'lesson-review',

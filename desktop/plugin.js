@@ -1,18 +1,22 @@
 // Lesson review: desktop half of the lesson-review plugin.
 //
 // Lists staged memory/skill writes from the backend (/api/plugins/lesson-review/pending) in a pane and
-// paints a count badge in the status bar. Selecting a row opens a review dialog for that one record:
+// paints a count badge in the status bar. Show and Refresh are also command palette rows and keybind actions
+// (unbound by default). Selecting a row opens a review dialog for that one record:
 // the exact proposal, per-op diffs, and Approve / Reject. Writes whose approval stopped partway are not
 // listed; a banner gives their count and says which slash command closes them.
 //
 // Only @hermes/plugin-sdk, react and react/jsx-runtime may be imported; this file is not compiled,
 // so it uses jsx()/jsxs() instead of JSX syntax.
-import { Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, PANES_AREA, STATUSBAR_AREAS, gatewayActivationEpoch, host, useGatewayActivationEpoch, useQuery, useQueryClient, useValue } from '@hermes/plugin-sdk'
+import { Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, KEYBINDS_AREA, PALETTE_AREA, PANES_AREA, STATUSBAR_AREAS, gatewayActivationEpoch, host, useGatewayActivationEpoch, useQuery, useQueryClient, useValue } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const PLUGIN = 'lesson-review'
 const PANE_ID = `${PLUGIN}:pane`
+// Keybind action ids (KEYBINDS_AREA); the palette rows name them so the palette shows the user's chord.
+const SHOW_ACTION = `${PLUGIN}.showPane`
+const REFRESH_ACTION = `${PLUGIN}.refresh`
 // Lists refresh on gateway events (`PUSH_EVENTS`): a decision made in a pane (dashboard/plugin_api.py emits
 // `pending.changed`) and the end of an agent turn this window is attached to, when that turn's writes have
 // been staged. Both are best effort. Polling covers what sends no event, or an event this window does not
@@ -338,6 +342,8 @@ function focusDialog(event) {
   event.currentTarget?.focus?.()
 }
 
+const isEditable = el => Boolean(el?.isContentEditable) || /^(INPUT|TEXTAREA|SELECT)$/.test(el?.tagName || '')
+
 // One record's review. ScopedPane mounts it only while a row is selected in the current scope, so a profile
 // or gateway switch unmounts it with its state. Esc, the X and an outside click are ignored while a decision is
 // in flight; a reply that arrives after the scope changed is dropped.
@@ -414,12 +420,25 @@ function ReviewDialog({ ctx, profile, activation, connectionId, selected, refres
     body = jsx(ReviewBody, { rec: preview.data, fallbackCreatedAt: selected.created_at })
   }
 
+  // ⌘/Ctrl+Enter approves and ⌘/Ctrl+Backspace rejects, through the same gate as the buttons. A held key's
+  // auto-repeat is ignored: a chord still held from opening the row must not approve once the preview lands.
+  // No ⌘/Ctrl+R for Preview again: Desktop's main process claims that chord before the page sees it.
+  function onDialogKeyDown(event) {
+    if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return
+    if (event.defaultPrevented || event.nativeEvent?.isComposing || isEditable(event.target)) return
+    const verb = event.key === 'Enter' ? 'approve' : event.key === 'Backspace' ? 'reject' : null
+    if (!verb) return
+    event.preventDefault()
+    if (!event.repeat) decide(verb)
+  }
+
   return jsx(Dialog, {
     open: true,
     onOpenChange: open => { if (!open) close() },
     children: jsxs(DialogContent, {
       style: DIALOG_SIZE,
       onOpenAutoFocus: focusDialog,
+      onKeyDown: onDialogKeyDown,
       // Radix returns focus to a DialogTrigger; this dialog opens from a list row without one, so on close
       // Radix would drop focus to the page. Hand it back to the list instead. Radix runs this after unmount.
       onCloseAutoFocus: event => {
@@ -440,7 +459,9 @@ function ReviewDialog({ ctx, profile, activation, connectionId, selected, refres
           style: { paddingRight: '2rem' },
           children: [
             jsx(DialogTitle, { children: 'Review pending write' }),
-            jsx(DialogDescription, { children: 'Approve applies this staged write. Reject discards it.' })
+            jsx(DialogDescription, {
+              children: 'Approve (⌘/Ctrl+Enter) applies this staged write. Reject (⌘/Ctrl+Backspace) discards it.'
+            })
           ]
         }),
         body
@@ -636,10 +657,34 @@ function usePendingPushSync({ profile, activation, connectionId }) {
   }, [queryClient, profile, activation, connectionId])
 }
 
+// The palette rows and keybind actions run outside React. They reach the app's QueryClient through the one
+// the pending lists last mounted with (Desktop has one per window), and act only on the current connection.
+let appQueryClient = null
+
+const currentPendingKey = () => [PLUGIN, 'pending', host.state.profile.get(), gatewayActivationEpoch(), currentConnectionId()]
+
+function showPane() {
+  host.revealPane(PANE_ID)
+}
+
+function refreshPendingNow() {
+  appQueryClient?.invalidateQueries({ queryKey: currentPendingKey() })
+}
+
+// `N pending` from the current connection's first `all` page while the badge or pane still watches it; '' when
+// nothing does (the cached copy is no longer refreshed), before the first read, or after a failed one.
+function pendingDetail() {
+  const query = appQueryClient?.getQueryCache().find({ queryKey: [...currentPendingKey(), 'all', 1], exact: true })
+  if (!query?.getObserversCount() || query.state.status !== 'success') return ''
+  return `${query.state.data.counts.total} pending`
+}
+
 // The pending list for one filter. A failed read shows nothing from an earlier read: react-query keeps
 // the last good data on error, and showing those counts as current would be wrong.
 function usePendingList(ctx, { profile, activation, connectionId }, filter, page = 1) {
   const paneVisible = usePaneVisible()
+  const queryClient = useQueryClient()
+  useEffect(() => { appQueryClient = queryClient }, [queryClient])
   usePendingPushSync({ profile, activation, connectionId })
   const list = useQuery({
     queryKey: [PLUGIN, 'pending', profile, activation, connectionId, filter, page],
@@ -884,6 +929,17 @@ function ScopedPane({ ctx, profile, activation, connectionId }) {
   } else {
     body = jsx('div', {
       className: 'flex flex-col gap-1',
+      // ArrowUp / ArrowDown step between rows (Tab still visits each one).
+      onKeyDown: event => {
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+        if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+        const listRows = [...event.currentTarget.querySelectorAll('[data-wr-row]')].filter(r => !r.disabled)
+        const idx = listRows.indexOf(event.target)
+        const next = idx < 0 ? null : listRows[idx + (event.key === 'ArrowDown' ? 1 : -1)]
+        if (!next) return
+        event.preventDefault()
+        next.focus()
+      },
       children: items.map((item, index) => {
         const key = itemKey(item)
         const isChecked = selecting && visibleChecked.includes(key)
@@ -1064,6 +1120,46 @@ export default {
       area: STATUSBAR_AREAS.right,
       order: 125,
       render: () => jsx(PendingBadge, { ctx })
+    })
+    // Older Desktops have no revealPane, so no Show action there. Both chords ship unbound: the obvious ones
+    // are taken (⌘⇧L is Show browser), and the user can bind them in Settings > Keybinds.
+    if (typeof host.revealPane === 'function') {
+      ctx.register({
+        id: 'keybind-show',
+        area: KEYBINDS_AREA,
+        data: { id: SHOW_ACTION, category: 'view', label: 'Show Lesson review pane', defaults: [], run: showPane }
+      })
+      ctx.register({
+        id: 'palette-show',
+        area: PALETTE_AREA,
+        data: {
+          id: SHOW_ACTION,
+          label: 'Lesson review: Show pending writes',
+          action: SHOW_ACTION,
+          keywords: ['lesson', 'review', 'pending', 'writes', 'memory', 'skills', 'approve', 'reject'],
+          detail: pendingDetail,
+          detailVariant: 'muted',
+          run: showPane
+        }
+      })
+    }
+    ctx.register({
+      id: 'keybind-refresh',
+      area: KEYBINDS_AREA,
+      data: { id: REFRESH_ACTION, category: 'view', label: 'Refresh Lesson review', defaults: [], run: refreshPendingNow }
+    })
+    ctx.register({
+      id: 'palette-refresh',
+      area: PALETTE_AREA,
+      data: {
+        id: REFRESH_ACTION,
+        label: 'Lesson review: Refresh pending writes',
+        action: REFRESH_ACTION,
+        keywords: ['lesson', 'review', 'refresh', 'reload', 'pending', 'writes'],
+        detail: pendingDetail,
+        detailVariant: 'muted',
+        run: refreshPendingNow
+      }
     })
   }
 }

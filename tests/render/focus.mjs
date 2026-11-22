@@ -49,6 +49,7 @@ async function mountPane({ decide = applied, items = ITEMS, listError = null, de
   globalThis.__WR_COMPOSER__ = []
   globalThis.__WR_LISTENERS__ = new Map()
   globalThis.__WR_TOASTS__ = []
+  globalThis.__WR_REVEALS__ = []
   const state = { items: [...items], posts: [], postBodies: [], previews: [], listReads: 0, listError, scope: 'default', listPaths: [] }
   const ctx = {
     rest(path, init) {
@@ -633,5 +634,107 @@ for (const [visible, ms] of [[true, 10000], [false, 60000]]) {
   await act(async () => s.root.unmount())
 }
 globalThis.__WR_PANE_VISIBLE__ = undefined
+
+// ---- 20. keyboard: arrows move between rows; Mod+Enter / Mod+Backspace decide through the buttons' gate ----
+{
+  const s = await mountPane()
+  const [first, second] = rows(s.host)
+  await act(async () => { first.focus() })
+  await act(async () => {
+    first.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
+  })
+  check('ArrowDown moves focus to the next row', document.activeElement === second, describe(document.activeElement))
+  await act(async () => {
+    second.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }))
+  })
+  check('ArrowUp moves focus back to the previous row', document.activeElement === first, describe(document.activeElement))
+  const up = new w.KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true })
+  await act(async () => { first.dispatchEvent(up) })
+  check('ArrowUp on the first row: focus stays, the key is left to the pane', document.activeElement === first && !up.defaultPrevented)
+
+  const press = (key, mods = {}) => act(async () => {
+    dialog().dispatchEvent(new w.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...mods }))
+  })
+  await openRow(first)
+  await press('Enter')
+  await settle()
+  check('plain Enter in the dialog decides nothing', s.state.posts.length === 0 && Boolean(dialog()))
+  await press('Enter', { ctrlKey: true, repeat: true })
+  await settle()
+  check('an auto-repeated Ctrl+Enter decides nothing', s.state.posts.length === 0 && Boolean(dialog()))
+  await press('Enter', { ctrlKey: true })
+  await settle()
+  check('Ctrl+Enter approves with the preview\'s expect and closes',
+    s.state.posts.at(-1) === '/pending/memory/aaaa0001/approve' && s.state.postBodies.at(-1)?.expect?.record_sha256
+    && !dialog(), JSON.stringify(s.state.posts))
+  await openRow(rows(s.host)[0])
+  await press('Backspace', { metaKey: true })
+  await settle()
+  check('Cmd+Backspace rejects and closes', s.state.posts.at(-1) === '/pending/memory/bbbb0002/reject' && !dialog(),
+    JSON.stringify(s.state.posts))
+  await act(async () => s.root.unmount())
+}
+
+// ---- 21. Mod+Enter before the preview arrives, or while the gate is shut, approves nothing ----
+{
+  const gate = deferred()
+  const s = await mountPane({ previewOf: id => gate.promise.then(() => memoryPreview(id)) })
+  await openRow(rows(s.host)[0])
+  await act(async () => {
+    dialog().dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true }))
+  })
+  await act(async () => { gate.resolve() })
+  await settle()
+  check('Ctrl+Enter while the preview loads: nothing sent, now or once it lands',
+    s.state.posts.length === 0 && Boolean(dialog()) && usable(button('Approve')))
+  await act(async () => s.root.unmount())
+
+  const off = await mountPane({ decisionsEnabled: false })
+  await openRow(rows(off.host)[0])
+  await act(async () => {
+    dialog().dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true, cancelable: true }))
+  })
+  await settle()
+  check('Cmd+Enter with decisions off: nothing sent', off.state.posts.length === 0)
+  await act(async () => off.root.unmount())
+}
+
+// ---- 22. palette and keybind actions: Show reveals the pane; the count and Refresh are the current connection's ----
+{
+  const s = await mountPane({ withBadge: true })
+  const contributions = []
+  plugin.register({ register: c => contributions.push(c) })
+  const entry = (area, id) => contributions.find(c => c.area === area && c.data.id === id)?.data
+  const show = entry('palette', 'lesson-review.showPane')
+  const refresh = entry('palette', 'lesson-review.refresh')
+  check('palette detail: the pending count', show.detail() === '3 pending' && refresh.detail() === '3 pending', show.detail())
+  show.run()
+  entry('keybinds', 'lesson-review.showPane').run()
+  check('Show reveals this plugin\'s pane', JSON.stringify(globalThis.__WR_REVEALS__)
+    === JSON.stringify(['lesson-review:pane', 'lesson-review:pane']), JSON.stringify(globalThis.__WR_REVEALS__))
+  let reads = s.state.listReads
+  await act(async () => { refresh.run() })
+  await settle()
+  check('palette Refresh reads the list again', s.state.listReads > reads, `${reads} -> ${s.state.listReads}`)
+  reads = s.state.listReads
+  await act(async () => { entry('keybinds', 'lesson-review.refresh').run() })
+  await settle()
+  check('keybind Refresh reads the list again', s.state.listReads > reads, `${reads} -> ${s.state.listReads}`)
+  globalThis.__WR_PROFILE__ = 'other'
+  reads = s.state.listReads
+  await act(async () => { refresh.run() })
+  await settle()
+  check('after a profile switch: no count from the old profile, and Refresh leaves its lists alone',
+    show.detail() === '' && s.state.listReads === reads, `${show.detail()} / ${reads} -> ${s.state.listReads}`)
+  globalThis.__WR_PROFILE__ = 'default'
+  s.state.listError = httpError(503)
+  await pollList(s)
+  check('after a failed read: no count', show.detail() === '', show.detail())
+  s.state.listError = null
+  await pollList(s)
+  check('setup: the count is back', show.detail() === '3 pending', show.detail())
+  await act(async () => s.root.unmount())
+  check('nothing watching the list any more: no count from the cached copy', show.detail() === '', show.detail())
+}
 
 finish()
