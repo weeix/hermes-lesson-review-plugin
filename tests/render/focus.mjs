@@ -21,27 +21,30 @@ const memoryItems = ids => ids.map((id, n) => ({
 }))
 const ITEMS = memoryItems(['aaaa0001', 'bbbb0002', 'cccc0003'])
 // One page of the list, as core answers it: 25 per page, `total` over every page.
-const listOf = (items, page = 1) => ({ kind: 'all', scope: 'default', page, page_size: 25, total: items.length,
-  counts: { memory: items.length, skills: 0, total: items.length },
+const listOf = (items, page = 1, decisionsEnabled = true) => ({ kind: 'all', scope: 'default', page, page_size: 25, total: items.length,
+  decisions_enabled: decisionsEnabled, counts: { memory: items.length, skills: 0, total: items.length },
   gates: { memory: { write_approval: true }, skills: { write_approval: true } }, items: items.slice((page - 1) * 25, page * 25) })
 const preview = id => memoryPreview(id)
 const applied = id => ({ id, subsystem: 'memory', status: 'applied' })
 
-// `decide(id)` answers a POST (a value or a promise); `state.listError`, when set, fails every list read;
+// `decide(id, verb)` answers a POST and `previewOf(id)` a preview read (each a value or a promise);
+// `state.listError`, when set, fails every list read;
 // `state.scope` is the scope the list reports. The QueryClient has Desktop's own defaults
 // (apps/desktop/src/lib/query-client.ts), so react-query's default retries apply unless the plugin overrides them.
-async function mountPane({ decide = applied, items = ITEMS, listError = null } = {}) {
+async function mountPane({ decide = applied, items = ITEMS, listError = null, decisionsEnabled = true, previewOf = null } = {}) {
   globalThis.__WR_PROFILE__ = 'default'
   globalThis.__WR_ACTIVATION__ = 1
   globalThis.__WR_TOASTS__ = []
-  const state = { items: [...items], posts: [], listReads: 0, listError, scope: 'default', listPaths: [] }
+  const state = { items: [...items], posts: [], postBodies: [], previews: [], listReads: 0, listError, scope: 'default', listPaths: [] }
   const ctx = {
     rest(path, init) {
       if (init?.method === 'POST') {
         state.posts.push(path)
+        state.postBodies.push(init.body)
         const id = path.split('/')[3]
-        return Promise.resolve(decide(id)).then(reply => {
-          if (reply.status === 'applied') state.items = state.items.filter(i => i.id !== id)
+        const verb = path.split('/')[4]
+        return Promise.resolve(decide(id, verb)).then(reply => {
+          if (reply.status === 'applied' || reply.status === 'rejected') state.items = state.items.filter(i => i.id !== id)
           return reply
         })
       }
@@ -50,9 +53,11 @@ async function mountPane({ decide = applied, items = ITEMS, listError = null } =
         state.listPaths.push(path)
         if (state.listError) return Promise.reject(state.listError)
         const page = Number(new URLSearchParams(path.split('?')[1]).get('page') || 1)
-        return Promise.resolve({ ...listOf(state.items, page), scope: state.scope })
+        return Promise.resolve({ ...listOf(state.items, page, decisionsEnabled), scope: state.scope })
       }
-      return Promise.resolve(preview(path.split('/')[3]))
+      state.previews.push(path)
+      const id = path.split('/')[3]
+      return previewOf ? Promise.resolve(previewOf(id)) : Promise.resolve({ ...preview(id), decisions_enabled: decisionsEnabled })
     }
   }
   const contributions = []
@@ -289,6 +294,141 @@ for (const [name, error, reads, text] of [
   await settle()
   check('network error: retried once, then "Could not reach Hermes."', s.state.listReads === 2 && s.host.textContent.includes('Could not reach Hermes.'),
     `${s.state.listReads} reads`)
+  await act(async () => s.root.unmount())
+}
+
+// ---- 11. multi-select mode: select rows or all on page, bulk reject with fresh expect tokens, read-only hides Select ----
+{
+  const s = await mountPane({ decide: (id, verb) => ({ id, subsystem: 'memory', status: verb === 'reject' ? 'rejected' : 'applied' }) })
+  check('select mode: Select button shown when decisions are enabled', usable(button('Select')))
+  await clickEl(button('Select'))
+  check('select mode: bulk bar shown, Reject disabled with 0 selected', Boolean(s.host.querySelector('[data-wr-bulk-bar]'))
+    && !usable(button('Reject')) && usable(button('All on page')) && usable(button('Done')))
+
+  await clickEl(rows(s.host)[0])
+  await clickEl(rows(s.host)[2])
+  check('select mode: clicking rows toggles checkboxes instead of opening the dialog', !dialog()
+    && rows(s.host)[0].getAttribute('aria-checked') === 'true'
+    && rows(s.host)[1].getAttribute('aria-checked') === 'false'
+    && rows(s.host)[2].getAttribute('aria-checked') === 'true'
+    && usable(button('Reject (2)')))
+
+  await clickEl(button('Reject (2)'))
+  await settle()
+  check('bulk reject: previewed and rejected both selected rows with their expect tokens',
+    JSON.stringify(s.state.posts) === JSON.stringify(['/pending/memory/aaaa0001/reject', '/pending/memory/cccc0003/reject'])
+    && s.state.postBodies.every(b => Boolean(b?.expect?.review_id)))
+  check('bulk reject: exits select mode, leaves unselected row, and toasts',
+    !s.host.querySelector('[data-wr-bulk-bar]') && rows(s.host).length === 1
+    && rows(s.host)[0].getAttribute('data-wr-row') === 'memory:bbbb0002'
+    && globalThis.__WR_TOASTS__.some(t => t.message === 'Rejected 2 writes.'))
+  await act(async () => s.root.unmount())
+}
+{
+  const s = await mountPane({ decide: id => ({ id, subsystem: 'memory', status: 'rejected' }) })
+  await clickEl(button('Select'))
+  await clickEl(button('All on page'))
+  check('select all on page: selects all 3 rows and offers Clear', usable(button('Reject (3)')) && usable(button('Clear')))
+  await clickEl(button('Clear'))
+  check('clear: unchecks all rows', !usable(button('Reject')) && s.host.textContent.includes('0 selected'))
+  await clickEl(button('Done'))
+  check('done: exits select mode back to normal list', !s.host.querySelector('[data-wr-bulk-bar]') && usable(button('Select')))
+  await act(async () => s.root.unmount())
+}
+{
+  const s = await mountPane({ decisionsEnabled: false })
+  check('read-only profile: Select button is hidden', !button('Select'))
+  await act(async () => s.root.unmount())
+}
+
+// ---- 12. bulk reject outcomes: approved or resolved elsewhere, a refusal, a halt; each said in the toast ----
+const toasts = () => globalThis.__WR_TOASTS__
+const rejectReply = (id, status, extra = {}) => ({ id, subsystem: 'memory', status, ...extra })
+async function selectAllAndReject(s, n) {
+  await clickEl(button('Select'))
+  await clickEl(button('All on page'))
+  await clickEl(button(`Reject (${n})`))
+  await settle()
+}
+{
+  const replies = {
+    aaaa0001: rejectReply('aaaa0001', 'rejected'),
+    bbbb0002: rejectReply('bbbb0002', 'already_resolved', { prior: 'applied' }),
+    dddd0004: rejectReply('dddd0004', 'conflict', { reason: 'changed' })
+  }
+  const s = await mountPane({
+    items: memoryItems(['aaaa0001', 'bbbb0002', 'cccc0003', 'dddd0004']),
+    decide: id => replies[id],
+    previewOf: id => (id === 'cccc0003'
+      ? Promise.reject(httpError(404, '{"detail":"no such pending write"}'))
+      : { ...preview(id), decisions_enabled: true })
+  })
+  await selectAllAndReject(s, 4)
+  check('mixed: every row tried, the gone one not posted', s.state.previews.length === 4
+    && JSON.stringify(s.state.posts) === JSON.stringify(['aaaa0001', 'bbbb0002', 'dddd0004'].map(id => `/pending/memory/${id}/reject`)),
+  JSON.stringify(s.state.posts))
+  const last = toasts().at(-1)
+  check('mixed: approved elsewhere is not counted as rejected; each outcome is named', last?.kind === 'warning'
+    && last.message === 'Rejected 1 of 4. 1 was already approved elsewhere. 1 was no longer pending. 1 could not be rejected.',
+  JSON.stringify(last))
+  check('mixed: a write still pending keeps select mode, with nothing checked',
+    Boolean(s.host.querySelector('[data-wr-bulk-bar]')) && s.host.textContent.includes('0 selected'))
+  await act(async () => s.root.unmount())
+}
+{
+  const s = await mountPane({ decide: id => rejectReply(id, 'already_resolved', { prior: 'rejected' }) })
+  await selectAllAndReject(s, 3)
+  check('already rejected elsewhere counts as rejected', toasts().at(-1)?.message === 'Rejected 3 writes.'
+    && toasts().at(-1)?.kind === 'info' && !s.host.querySelector('[data-wr-bulk-bar]'), JSON.stringify(toasts().at(-1)))
+  await act(async () => s.root.unmount())
+}
+{
+  const s = await mountPane({
+    decide: id => (id === 'bbbb0002'
+      ? Promise.reject(httpError(501, '{"detail":"approve/reject are disabled for this profile"}'))
+      : rejectReply(id, 'rejected'))
+  })
+  await selectAllAndReject(s, 3)
+  check('halt: a 501 stops the run; the third row is never read', s.state.posts.length === 2 && s.state.previews.length === 2,
+    JSON.stringify(s.state.previews))
+  check('halt: the toast keeps the count rejected before stopping', toasts().at(-1)?.kind === 'warning'
+    && toasts().at(-1)?.message === 'Decisions are turned off for this profile (read-only). Rejected 1 of 3 before stopping.',
+  JSON.stringify(toasts().at(-1)))
+  await act(async () => s.root.unmount())
+}
+{
+  const s = await mountPane({ previewOf: () => Promise.reject(httpError(404, '{"detail":"Plugin not found"}')) })
+  await selectAllAndReject(s, 3)
+  check('halt: the plugin turned off (404 Plugin not found) stops at the first row', s.state.previews.length === 1
+    && s.state.posts.length === 0 && /turned off/.test(toasts().at(-1)?.message ?? ''), JSON.stringify(toasts().at(-1)))
+  await act(async () => s.root.unmount())
+}
+
+// ---- 13. select mode and focus: Done hands focus to Select; a running bulk reject keeps it in the pane ----
+{
+  const s = await mountPane()
+  await clickEl(button('Select'))
+  await act(async () => { button('Done').focus() })
+  await clickEl(button('Done'))
+  check('Done: focus moves to the Select button', document.activeElement === button('Select'), describe(document.activeElement))
+  await act(async () => s.root.unmount())
+}
+{
+  const ids = Array.from({ length: 26 }, (_, n) => `f${String(n).padStart(7, '0')}`)
+  const reply = deferred()
+  const s = await mountPane({ items: memoryItems(ids), decide: () => reply.promise })
+  const pane = s.host.firstElementChild
+  await clickEl(button('Select'))
+  await clickEl(rows(s.host)[0])
+  await act(async () => { button('Reject (1)').focus() })
+  await clickEl(button('Reject (1)'))
+  check('bulk busy: focus held on the pane, not dropped to the page', document.activeElement === pane, describe(document.activeElement))
+  check('bulk busy: filters, paging and the bar are locked', !usable(button('All')) && !usable(button('Next'))
+    && !usable(button('Done')) && !usable(button('Clear') || button('All on page')) && rows(s.host).every(r => r.disabled))
+  await act(async () => reply.resolve(rejectReply(ids[0], 'rejected')))
+  await settle()
+  check('bulk done: select mode ends and focus stays in the pane', !s.host.querySelector('[data-wr-bulk-bar]')
+    && pane.contains(document.activeElement), describe(document.activeElement))
   await act(async () => s.root.unmount())
 }
 

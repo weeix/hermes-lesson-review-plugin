@@ -102,7 +102,8 @@ def _adapter_errors():
 def list_pending(kind: str = Query("all"), page: int = Query(1, ge=1)) -> dict:
     _require_kind(kind, allow_all=True)
     with _adapter_errors():
-        return ADAPTER.list_pending(kind, page)
+        result = ADAPTER.list_pending(kind, page)
+    return {**result, "decisions_enabled": _decisions_enabled()}
 
 
 @router.get("/pending/{kind}/{pending_id}")

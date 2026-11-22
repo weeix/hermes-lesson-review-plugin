@@ -8,4 +8,4 @@ export function useState(initial) {
   return React.useState(initial === null && preset ? preset : initial)
 }
 
-export { useRef } from 'react'
+export { useEffect, useRef } from 'react'

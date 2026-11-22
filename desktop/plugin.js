@@ -8,7 +8,7 @@
 // Only @hermes/plugin-sdk, react and react/jsx-runtime may be imported; this file is not compiled,
 // so it uses jsx()/jsxs() instead of JSX syntax.
 import { Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, PANES_AREA, STATUSBAR_AREAS, gatewayActivationEpoch, host, useGatewayActivationEpoch, useQuery, useQueryClient, useValue } from '@hermes/plugin-sdk'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const PLUGIN = 'lesson-review'
@@ -502,10 +502,112 @@ function PendingPane({ ctx }) {
   return jsx(ScopedPane, { ctx, profile, activation }, JSON.stringify([profile, activation]))
 }
 
+const itemKey = item => `${item.kind}:${item.id}`
+
+// Failures that no later item can avoid: session refused, store refused, decisions off, Hermes unreachable.
+const BULK_HALT = new Set([null, 401, 403, 409, 501, 502, 503, 504])
+
+// Bulk rejection is the one multi-item action that needs no diff reading: every selected row is previewed
+// fresh for its `expect` token, then rejected one by one. Approve stays inside ReviewDialog so no proposal
+// is ever written without showing its full content and diff first. The fresh `expect` pins the record as it
+// is at reject time, not as listed; a row shows no content, so there is no earlier version the user read.
+//
+// Tally: `rejected` (by this run, or already rejected elsewhere), `approved` (approved elsewhere first),
+// `gone` (no longer pending), `failed` (still pending). `halted`: why the run stopped early, since every
+// remaining item would fail the same way; null when it went through the list. null overall: the scope changed.
+async function runBulkReject(ctx, targets, sameConnection) {
+  const tally = { rejected: 0, approved: 0, gone: 0, failed: 0, halted: null }
+  for (const { kind, id } of targets) {
+    if (!sameConnection()) return null
+    try {
+      const preview = await ctx.rest(`/pending/${kind}/${id}`)
+      if (!sameConnection()) return null
+      if (!preview?.decisions_enabled) return { ...tally, halted: DECISION_TITLE }
+      if (!preview.expect) {
+        tally.failed++
+        continue
+      }
+      const res = await ctx.rest(`/pending/${kind}/${id}/reject`, {
+        method: 'POST', body: { expect: preview.expect }
+      })
+      if (!sameConnection()) return null
+      const prior = res?.status === 'already_resolved' ? res.prior : null
+      if (res?.status === 'rejected' || prior === 'rejected') tally.rejected++
+      else if (prior === 'applied') tally.approved++
+      else if (res?.status === 'already_resolved') tally.gone++
+      else tally.failed++
+    } catch (error) {
+      const failure = describeFailure(error)
+      // A preview 404 is a record resolved elsewhere; "Plugin not found" (no `gone`) is the plugin turned off.
+      if (failure.gone) tally.gone++
+      else if (httpStatus(error) === 404 || BULK_HALT.has(httpStatus(error))) return { ...tally, halted: failure.text }
+      else tally.failed++
+    }
+  }
+  return tally
+}
+
+const writes = n => (n === 1 ? '1 write' : `${n} writes`)
+const wasWere = n => (n === 1 ? 'was' : 'were')
+
+// The toast for a finished run. `done`: nothing selected is still pending, so select mode can end.
+function bulkSummary(total, tally) {
+  const { rejected, approved, gone, failed, halted } = tally
+  const done = !halted && failed === 0
+  if (done && rejected === total) return { done, toast: { kind: 'info', message: `Rejected ${writes(rejected)}.` } }
+  const parts = [halted ? `${halted} Rejected ${rejected} of ${total} before stopping.` : `Rejected ${rejected} of ${total}.`]
+  if (approved) parts.push(`${approved} ${wasWere(approved)} already approved elsewhere.`)
+  if (gone) parts.push(`${gone} ${wasWere(gone)} no longer pending.`)
+  if (failed) parts.push(`${failed} could not be rejected.`)
+  const warn = Boolean(halted) || failed > 0 || approved > 0
+  return { done, toast: { kind: warn ? 'warning' : 'info', message: parts.join(' ') } }
+}
+
+function BulkBar({ pageCount, checkedCount, allChecked, busy, decisionsOff, onSelectAll, onReject, onDone }) {
+  const rejectReason = decisionsOff
+    ? DECISION_TITLE
+    : busy
+      ? 'Rejecting selected items…'
+      : checkedCount === 0
+        ? 'Select at least one item to reject.'
+        : ''
+  return jsxs('div', {
+    'data-wr-bulk-bar': '',
+    className: 'flex flex-wrap items-center gap-1.5 rounded p-1.5 text-[0.6875rem]',
+    style: BORDER,
+    children: [
+      pageCount > 0
+        ? jsx('button', {
+          type: 'button',
+          disabled: busy,
+          onClick: onSelectAll,
+          className: 'rounded px-1.5 py-0.5',
+          style: { ...BORDER, ...(busy ? { opacity: 0.45, cursor: 'not-allowed' } : undefined) },
+          children: allChecked ? 'Clear' : 'All on page'
+        })
+        : null,
+      jsx('span', { style: MUTED, children: busy ? 'Rejecting…' : `${checkedCount} selected` }),
+      jsxs('div', {
+        className: 'ml-auto flex items-center gap-1.5',
+        children: [
+          decisionButton(checkedCount > 0 ? `Reject (${checkedCount})` : 'Reject', rejectReason, onReject),
+          jsx(Button, { variant: 'ghost', disabled: busy, onClick: onDone, children: 'Done' })
+        ]
+      })
+    ].filter(Boolean)
+  })
+}
+
 function ScopedPane({ ctx, profile, activation }) {
   const [filter, setFilter] = useState('all')
   const [page, setPage] = useState(1)
   const [selected, setSelected] = useState(null)
+  const [selecting, setSelecting] = useState(false)
+  const [checked, setChecked] = useState([])
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const bulkInFlight = useRef(false)
+  // Set when Done ends select mode: the bar holding focus unmounts, so focus goes to Select (or the pane).
+  const refocusAfterSelect = useRef(false)
   // Where keyboard focus goes when the dialog closes: the row that opened it, or after a decision removed
   // that row, the row now in its place. `paneRef` is the fallback and tells whether this scope still shows.
   const paneRef = useRef(null)
@@ -520,6 +622,56 @@ function ScopedPane({ ctx, profile, activation }) {
   // page, so a reply whose `total` disagrees with its empty `items` cannot set the same page on every render.
   if (data && page > 1 && items.length === 0) setPage(Math.min(page - 1, Math.max(1, Math.ceil(data.total / data.page_size))))
   const needsReview = data?.needs_review?.total > 0 ? data.needs_review : null
+  const decisionsOff = data?.decisions_enabled === false
+  const pageKeys = items.map(itemKey)
+  const visibleChecked = checked.filter(k => pageKeys.includes(k))
+  const allChecked = pageKeys.length > 0 && visibleChecked.length === pageKeys.length
+  const sameConnection = () => host.state.profile.get() === profile && gatewayActivationEpoch() === activation
+
+  useEffect(() => {
+    if (selecting || !refocusAfterSelect.current) return
+    refocusAfterSelect.current = false
+    const pane = paneRef.current
+    if (pane?.isConnected) (pane.querySelector('[data-wr-select]') || pane).focus()
+  }, [selecting])
+
+  function exitSelecting() {
+    if (bulkInFlight.current) return
+    refocusAfterSelect.current = true
+    setSelecting(false)
+    setChecked([])
+  }
+
+  function toggleRow(key) {
+    if (bulkInFlight.current) return
+    setChecked(prev => {
+      const cur = prev.filter(k => pageKeys.includes(k))
+      return cur.includes(key) ? cur.filter(k => k !== key) : [...cur, key]
+    })
+  }
+
+  async function rejectSelected() {
+    if (bulkInFlight.current || visibleChecked.length === 0 || decisionsOff || !sameConnection()) return
+    const targets = items.filter(item => visibleChecked.includes(itemKey(item)))
+    bulkInFlight.current = true
+    setBulkBusy(true)
+    // The Reject button and the rows are disabled while the run goes, and the bar may unmount after it:
+    // hold focus on the pane so it does not drop to the page.
+    paneRef.current?.focus()
+    let tally = null
+    try {
+      tally = await runBulkReject(ctx, targets, sameConnection)
+    } finally {
+      bulkInFlight.current = false
+      if (sameConnection()) setBulkBusy(false)
+    }
+    if (!tally || !sameConnection()) return
+    refreshLists()
+    setChecked([])
+    const { done, toast } = bulkSummary(targets.length, tally)
+    if (done) setSelecting(false)
+    host.notify(toast)
+  }
 
   function restoreFocus(decided) {
     const pane = paneRef.current
@@ -557,24 +709,49 @@ function ScopedPane({ ctx, profile, activation }) {
     body = jsx('div', {
       className: 'flex flex-col gap-1',
       children: items.map((item, index) => {
-        const active = selected && selected.scope === data.scope && selected.kind === item.kind && selected.id === item.id
+        const key = itemKey(item)
+        const isChecked = selecting && visibleChecked.includes(key)
+        const active = isChecked || (!selecting && selected && selected.scope === data.scope && selected.kind === item.kind && selected.id === item.id)
         return jsxs('button', {
           type: 'button',
-          'data-wr-row': `${item.kind}:${item.id}`,
+          'data-wr-row': key,
+          role: selecting ? 'checkbox' : undefined,
+          'aria-checked': selecting ? isChecked : undefined,
+          disabled: selecting && bulkBusy,
           onClick: () => {
-            opener.current = { key: `${item.kind}:${item.id}`, index }
+            if (selecting) {
+              toggleRow(key)
+              return
+            }
+            opener.current = { key, index }
             setSelected({ kind: item.kind, id: item.id, scope: data.scope, created_at: item.created_at })
           },
           className: 'flex flex-col items-start gap-0.5 rounded p-2 text-left text-[0.75rem]',
-          style: { ...BORDER, background: active ? 'var(--ui-stroke-secondary)' : 'transparent' },
+          style: {
+            ...BORDER,
+            background: active ? 'var(--ui-stroke-secondary)' : 'transparent',
+            ...(selecting && bulkBusy ? { opacity: 0.6, cursor: 'not-allowed' } : undefined)
+          },
           children: [
             jsxs('div', {
               className: 'flex w-full items-center gap-1.5',
               children: [
+                selecting
+                  ? jsx('span', {
+                    'aria-hidden': 'true',
+                    className: 'inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded text-[0.625rem] leading-none',
+                    style: {
+                      ...BORDER,
+                      background: isChecked ? 'var(--ui-accent)' : 'transparent',
+                      color: isChecked ? 'var(--ui-bg-primary, #fff)' : 'transparent'
+                    },
+                    children: '✓'
+                  })
+                  : null,
                 jsx(Chip, { children: item.kind }),
                 jsx('span', { className: 'min-w-0 truncate font-medium', children: item.action }),
                 jsx('span', { className: 'ml-auto shrink-0 text-[0.6875rem]', style: MUTED, children: ago(item.created_at) })
-              ]
+              ].filter(Boolean)
             }),
             jsx('div', { className: 'w-full truncate text-[0.6875rem]', style: MUTED, children: item.summary }),
             jsx('div', {
@@ -583,7 +760,7 @@ function ScopedPane({ ctx, profile, activation }) {
               children: `${item.origin}${item.is_batch ? ` · batch of ${item.op_count}` : ''}`
             })
           ]
-        }, `${item.kind}:${item.id}`)
+        }, key)
       })
     })
   }
@@ -611,21 +788,52 @@ function ScopedPane({ ctx, profile, activation }) {
         : null,
       data ? jsx(Gates, { gates: data.gates }) : null,
       needsReview ? jsx(NeedsReviewBanner, { counts: needsReview }) : null,
-      jsx('div', {
-        className: 'flex gap-1',
-        children: FILTERS.map(f => jsx('button', {
-          type: 'button',
-          onClick: () => { setFilter(f.id); setPage(1); setSelected(null) },
-          className: 'rounded px-2 py-0.5 text-[0.6875rem]',
-          style: { ...BORDER, ...(filter === f.id ? { color: 'var(--ui-accent)' } : MUTED) },
-          children: f.label
-        }, f.id))
+      jsxs('div', {
+        className: 'flex items-center gap-1',
+        children: [
+          ...FILTERS.map(f => jsx('button', {
+            type: 'button',
+            disabled: bulkBusy,
+            onClick: () => { if (!bulkBusy) { setFilter(f.id); setPage(1); setSelected(null); setChecked([]) } },
+            className: 'rounded px-2 py-0.5 text-[0.6875rem]',
+            style: {
+              ...BORDER,
+              ...(filter === f.id ? { color: 'var(--ui-accent)' } : MUTED),
+              ...(bulkBusy ? { opacity: 0.45, cursor: 'not-allowed' } : undefined)
+            },
+            children: f.label
+          }, f.id)),
+          !selecting && items.length > 0 && !decisionsOff
+            ? jsx('button', {
+              type: 'button',
+              'data-wr-select': '',
+              onClick: () => { setSelected(null); setChecked([]); setSelecting(true) },
+              className: 'ml-auto rounded px-2 py-0.5 text-[0.6875rem]',
+              style: { ...BORDER, ...MUTED },
+              children: 'Select'
+            })
+            : null
+        ].filter(Boolean)
       }),
+      selecting && !failed && !list.isPending
+        ? jsx(BulkBar, {
+          pageCount: pageKeys.length,
+          checkedCount: visibleChecked.length,
+          allChecked,
+          busy: bulkBusy,
+          decisionsOff,
+          onSelectAll: () => setChecked(allChecked ? [] : pageKeys),
+          onReject: rejectSelected,
+          onDone: exitSelecting
+        })
+        : null,
       body,
-      data && data.total > data.page_size ? jsx(Pager, { data, setPage }) : null,
+      data && data.total > data.page_size
+        ? jsx(Pager, { data, disabled: bulkBusy, setPage: p => { if (!bulkBusy) { setChecked([]); setPage(p) } } })
+        : null,
       // The dialog belongs to the scope it was opened in. ScopedPane remounts on a profile or gateway switch;
       // a failed list poll (no data) leaves an open review alone instead of closing it mid-read or mid-decision.
-      selected && (!data || selected.scope === data.scope)
+      !selecting && selected && (!data || selected.scope === data.scope)
         ? jsx(ReviewDialog, {
           ctx, profile, activation, selected, refreshList: refreshLists,
           onClose: () => setSelected(null),
@@ -637,7 +845,7 @@ function ScopedPane({ ctx, profile, activation }) {
 }
 
 // Core answers one page at a time; `total` counts every page.
-function Pager({ data, setPage }) {
+function Pager({ data, disabled = false, setPage }) {
   const first = (data.page - 1) * data.page_size + 1
   const last = first + data.items.length - 1
   return jsxs('div', {
@@ -645,8 +853,8 @@ function Pager({ data, setPage }) {
     style: MUTED,
     children: [
       jsx('span', { className: 'mr-auto', children: `${first}–${last} of ${data.total}` }),
-      jsx(Button, { variant: 'ghost', disabled: data.page <= 1, onClick: () => setPage(data.page - 1), children: 'Previous' }),
-      jsx(Button, { variant: 'ghost', disabled: last >= data.total, onClick: () => setPage(data.page + 1), children: 'Next' })
+      jsx(Button, { variant: 'ghost', disabled: disabled || data.page <= 1, onClick: () => setPage(data.page - 1), children: 'Previous' }),
+      jsx(Button, { variant: 'ghost', disabled: disabled || last >= data.total, onClick: () => setPage(data.page + 1), children: 'Next' })
     ]
   })
 }

@@ -46,6 +46,7 @@ def test_list_returns_counts_gates_and_items(client):
     assert body["counts"]["total"] == 8
     assert body["gates"]["memory"]["write_approval"] is True
     assert body["adapter"] == "fake"
+    assert body["decisions_enabled"] is False
     assert len(body["items"]) == 8
 
 
@@ -90,6 +91,9 @@ class CoreProbe:
 
     def __init__(self):
         self.calls = []
+
+    def list_pending(self, kind, page):
+        return {"kind": kind, "page": page, "items": []}
 
     def get_preview(self, kind, pid):
         return {"id": pid, "status": "ready"}
@@ -148,6 +152,7 @@ def test_core_decisions_are_on_by_default_and_need_an_explicit_expect(monkeypatc
 ])
 def test_the_profile_setting_turns_decisions_on_or_off(monkeypatch, config, enabled):
     client, probe = _core_client(monkeypatch, config)
+    assert client.get(f"{PREFIX}/pending").json()["decisions_enabled"] is enabled
     assert client.get(f"{PREFIX}/pending/memory/0a1d0001").json()["decisions_enabled"] is enabled
     r = client.post(f"{PREFIX}/pending/memory/0a1d0001/approve", json={"expect": {"profile": "p"}})
     assert r.status_code == (200 if enabled else 501)
