@@ -1,8 +1,4 @@
-// sdk-live.mjs (the stub with the host's react-query) plus the host's real dialog: Radix Dialog from
-// 'radix-ui' 1.7.0 (apps/desktop/package.json; @radix-ui/react-dialog 1.2.0, as in Desktop's lockfile). DialogContent mirrors
-// apps/desktop/src/components/ui/dialog.tsx structurally (Portal > Overlay + Content > body, chrome, close
-// button; extra props such as onCloseAutoFocus pass through to Radix) without its Tailwind skin.
-// Used by focus.mjs, where real focus management matters.
+// Preserve the host dialog's structure, not its Tailwind skin, so focus tests exercise Radix.
 import { Dialog as D } from 'radix-ui'
 import { jsx, jsxs } from 'react/jsx-runtime'
 

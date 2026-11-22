@@ -1,10 +1,4 @@
-"""Adapters between the lesson-review routes and Hermes core.
-
-``CoreAdapter`` is the production adapter. It calls the public ``tools.write_review_api`` service,
-which resolves the request's profile and owns the pending store (id format, link and file-type
-checks). ``FakeAdapter`` is the same adapter over fixture replies in core's shape, for development
-and the render tests; the routes never let it decide.
-"""
+"""Hermes owns profile resolution and pending-store validation; adapters shape its replies."""
 
 from __future__ import annotations
 
@@ -27,7 +21,7 @@ class StoreRefusedError(RuntimeError):
 
 
 class CoreUnavailableError(RuntimeError):
-    """This host does not publish the Write Review API yet."""
+    """The host does not provide a compatible Write Review API."""
 
 
 @contextmanager
@@ -97,9 +91,6 @@ class CoreAdapter:
 
 
 class FakeAdapter(CoreAdapter):
-    """CoreAdapter over eight fixture writes (memory add/replace/remove, a memory batch, skill
-    create/patch/delete, a three-op skill batch), in core's list and preview reply shapes."""
-
     name = "fake"
 
     def __init__(self, now: Optional[float] = None) -> None:

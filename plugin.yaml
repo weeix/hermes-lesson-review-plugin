@@ -5,8 +5,7 @@ description: "Lesson review: a review pane for pending writes that write_approva
 author: weeix
 license: MIT
 tags: [write-approval, pending-writes, memory, skills, review]
-# Unified package: this folder carries the desktop half (desktop/plugin.js) and the backend
-# (dashboard/plugin_api.py).
+
 provides_tools: []
 provides_hooks: []
 config_schema:

@@ -1,9 +1,4 @@
-// The pane and its review dialog with the host's real Radix Dialog (sdk-radix.mjs), real React DOM in jsdom
-// and the host's react-query: keyboard focus on open and close, dismissal while a decision is in flight, and
-// what a profile, gateway or scope switch or a failed list poll does to an open review.
-// Radix returns focus to a DialogTrigger, and this plugin opens its dialog from a list row without one, so
-// the plugin must return focus itself.
-// Run: (cd tests/render && node focus.mjs)
+// Use real Radix focus and dismissal handling; a static render cannot exercise either.
 import { checker, deferred, httpError, loadPluginCopy, memoryPreview, setupDom } from './harness.mjs'
 
 const w = await setupDom()

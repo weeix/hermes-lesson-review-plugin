@@ -1,11 +1,3 @@
-// Lesson review: desktop half of the lesson-review plugin.
-//
-// Lists staged memory/skill writes from the backend (/api/plugins/lesson-review/pending) in a pane and
-// paints a count badge in the status bar; clicking the badge reveals the pane. Show and Refresh are also command palette rows and keybind actions
-// (unbound by default). Selecting a row opens a review dialog for that one record:
-// the exact proposal, per-op diffs, and Approve / Reject. Writes whose approval stopped partway are not
-// listed; a banner gives their count and says which slash command closes them.
-//
 // Only @hermes/plugin-sdk, react and react/jsx-runtime may be imported; this file is not compiled,
 // so it uses jsx()/jsxs() instead of JSX syntax.
 import { Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, KEYBINDS_AREA, PALETTE_AREA, PANES_AREA, STATUSBAR_AREAS, gatewayActivationEpoch, host, useGatewayActivationEpoch, useQuery, useQueryClient, useValue } from '@hermes/plugin-sdk'
@@ -14,21 +6,22 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 
 const PLUGIN = 'lesson-review'
 const PANE_ID = `${PLUGIN}:pane`
+const pendingKey = ({ profile, activation, connectionId }) => [PLUGIN, 'pending', profile, activation, connectionId]
+
+const pendingPath = ({ kind, id }) => `/pending/${kind}/${id}`
+const fetchPreview = (ctx, item) => ctx.rest(pendingPath(item))
+const postDecision = (ctx, item, verb, expect) => ctx.rest(`${pendingPath(item)}/${verb}`, {
+  method: 'POST', body: { expect }
+})
 // Keybind action ids (KEYBINDS_AREA); the palette rows name them so the palette shows the user's chord.
 const SHOW_ACTION = `${PLUGIN}.showPane`
 const REFRESH_ACTION = `${PLUGIN}.refresh`
-// Lists refresh on gateway events (`PUSH_EVENTS`): a decision made in a pane (dashboard/plugin_api.py emits
-// `pending.changed`) and the end of an agent turn this window is attached to, when that turn's writes have
-// been staged. Both are best effort. Polling covers what sends no event, or an event this window does not
-// get: a slash command (including the banner's reject), the CLI, a turn in a session this window is not
-// attached to, a background review, a route served from a plugin host. 10 s while the pane shows, 60 s
-// while it doesn't.
+// Push events are best effort. Polling also covers slash commands, background reviews,
+// and changes outside this window's gateway or subscribed sessions.
 const VISIBLE_POLL_MS = 10000
 const HIDDEN_POLL_MS = 60000
 const PUSH_EVENTS = [`plugin.${PLUGIN}.pending.changed`, 'message.complete']
-// Events come in bursts (a bulk reject sends one per write; the pane and the badge both listen): the lists
-// of one connection refresh once, PUSH_SETTLE_MS after the last event and at most PUSH_MAX_WAIT_MS after
-// the first.
+
 const PUSH_SETTLE_MS = 300
 const PUSH_MAX_WAIT_MS = 2000
 const FILTERS = [
@@ -41,8 +34,7 @@ const BORDER = { border: '1px solid var(--ui-stroke-secondary)' }
 const RULE = { borderTop: '1px solid var(--ui-stroke-secondary)' }
 const MONO = { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }
 const CHIP = 'inline-flex items-center rounded px-1.5 py-px text-[0.6875rem] leading-4'
-// Sized inline: DialogContent's own default is max-w-lg, and the plugin cannot rely on host classes it
-// did not compile itself. The body box of DialogContent scrolls; the footer is pinned below it.
+// The plugin cannot rely on utility classes the host did not compile.
 const DIALOG_SIZE = { width: 'min(860px, calc(100vw - 2rem))', maxWidth: 'calc(100vw - 2rem)', maxHeight: '80vh' }
 
 function ago(ts) {
@@ -69,9 +61,7 @@ function httpStatus(error) {
   return match ? Number(match[1]) : null
 }
 
-// Desktop's query client keeps react-query's default of three retries (1 s, 2 s, 4 s apart). A 4xx answer
-// (plugin off, session refused, store refused) will not change on retry, and retrying it hid the message
-// behind "Loading…" for seconds. Retry only what may pass: one more try after a 5xx or a network error.
+// React Query keeps the failure message behind the loading state until retries finish.
 function retryOnce(failureCount, error) {
   const status = httpStatus(error)
   return failureCount < 1 && (status === null || status >= 500)
@@ -86,8 +76,9 @@ function describeFailure(error) {
   const detail = errorText(error)
   if (status === 404 && /Plugin not found/i.test(detail)) return { text: OFF_TEXT, detail }
   if (status === 404) return { text: 'Lesson review is not available on this Hermes (HTTP 404).', detail, gone: true }
-  if (status === 503 && /Write Review API/i.test(detail)) return { text: 'Update Hermes to use Lesson review.', detail }
-  // The profile turned decisions off after this preview was loaded.
+  if (status === 503 && /Write Review API/i.test(detail)) {
+    return { text: 'Lesson review needs a Hermes backend with the Write Review API. See the plugin README.', detail }
+  }
   if (status === 501 && /disabled/i.test(detail)) return { text: DECISION_TITLE, detail }
   if (status === 409) return { text: 'Hermes could not access this profile’s pending store.', detail }
   if (status === 401 || status === 403) {
@@ -106,8 +97,7 @@ function Gates({ gates }) {
   return jsx('div', { className: 'text-[0.6875rem]', style: MUTED, children: `write_approval: ${parts.join(' · ')}` })
 }
 
-// A labelled, scrolling monospace box: one op field, or its diff. Lines pad themselves (px-1.5), so a
-// diff line's colour runs to the box edge.
+// Pad individual lines so a diff line's background can reach the box edge.
 function LabelledPre({ name, lines }) {
   return jsxs('div', {
     className: 'flex flex-col gap-0.5',
@@ -134,28 +124,29 @@ const DIFF_LINE = {
   meta: MUTED
 }
 // `---`/`+++` are file headers only before the first hunk; inside one, `----` is a removed `---` line.
-function diffLineKinds(lines) {
-  let inHunk = false
-  return lines.map(line => {
-    if (line.startsWith('@@')) { inHunk = true; return 'meta' }
-    if (!inHunk) return line.startsWith('---') || line.startsWith('+++') ? 'meta' : null
-    if (line.startsWith('+')) return 'add'
-    if (line.startsWith('-')) return 'remove'
-    return null
-  })
-}
-
 function DiffField({ diff }) {
-  const lines = String(diff).split('\n')
-  const kinds = diffLineKinds(lines)
+  let inHunk = false
   return jsx(LabelledPre, {
     name: 'diff',
-    lines: lines.map((line, i) => jsx('div', {
-      'data-wr-diff-line': kinds[i] || 'context',
-      className: 'px-1.5',
-      style: kinds[i] ? DIFF_LINE[kinds[i]] : undefined,
-      children: line || ' '
-    }, i))
+    lines: String(diff).split('\n').map((line, i) => {
+      let kind = 'context'
+      if (line.startsWith('@@')) {
+        inHunk = true
+        kind = 'meta'
+      } else if (!inHunk) {
+        if (line.startsWith('---') || line.startsWith('+++')) kind = 'meta'
+      } else if (line.startsWith('+')) {
+        kind = 'add'
+      } else if (line.startsWith('-')) {
+        kind = 'remove'
+      }
+      return jsx('div', {
+        'data-wr-diff-line': kind,
+        className: 'px-1.5',
+        style: DIFF_LINE[kind],
+        children: line || ' '
+      }, i)
+    })
   })
 }
 
@@ -193,7 +184,6 @@ function decisionButton(label, reason, onClick) {
   })
 }
 
-// Plain functions, so the render checks can call them without a renderer.
 
 // Why Approve / Reject cannot be used now, as a tooltip string ('' = usable). The gate and the in-flight
 // decision apply to both buttons; Approve also needs the preview itself to be `ready`.
@@ -259,8 +249,6 @@ function decisionOutcome(kind, result, error) {
 
 const IDLE = { busy: false, notice: null, settled: false, stale: false, refreshing: false }
 
-// The outcome of a decision that did not close the dialog. Bordered and tinted, in the primary text colour,
-// so it is read before the buttons. `role` lets a screen reader announce it.
 const NOTICE_COLOR = {
   warning: 'var(--ui-warning, #d69e2e)',
   error: 'var(--ui-danger, #f87171)'
@@ -284,8 +272,7 @@ function Notice({ notice }) {
   })
 }
 
-// Footer pinned under the scrolling body. With no record yet (loading, or the preview failed), no decision
-// buttons. `retry`: the preview failed, so offer Preview again even without a decision notice.
+
 function ReviewFooter({ rec, decision, retry, onApprove, onReject, onClose, onPreviewAgain }) {
   const gate = rec ? decisionGate(rec, decision) : null
   return jsxs('div', {
@@ -344,9 +331,6 @@ function focusDialog(event) {
 
 const isEditable = el => Boolean(el?.isContentEditable) || /^(INPUT|TEXTAREA|SELECT)$/.test(el?.tagName || '')
 
-// One record's review. ScopedPane mounts it only while a row is selected in the current scope, so a profile
-// or gateway switch unmounts it with its state. Esc, the X and an outside click are ignored while a decision is
-// in flight; a reply that arrives after the scope changed is dropped.
 function ReviewDialog({ ctx, profile, activation, connectionId, selected, refreshList, onClose, restoreFocus }) {
   const [decision, setDecision] = useState(IDLE)
   const inFlight = useRef(false)
@@ -356,7 +340,7 @@ function ReviewDialog({ ctx, profile, activation, connectionId, selected, refres
   const refreshing = useRef(false)
   const preview = useQuery({
     queryKey: [PLUGIN, 'preview', profile, activation, connectionId, selected.scope, selected.kind, selected.id],
-    queryFn: () => ctx.rest(`/pending/${selected.kind}/${selected.id}`),
+    queryFn: () => fetchPreview(ctx, selected),
     retry: retryOnce
   })
   // While any refetch runs, react-query still returns the previous preview (isPending false); decisions wait
@@ -375,9 +359,7 @@ function ReviewDialog({ ctx, profile, activation, connectionId, selected, refres
     setDecision({ ...IDLE, busy: true })
     let outcome
     try {
-      const result = await ctx.rest(`/pending/${selected.kind}/${selected.id}/${verb}`, {
-        method: 'POST', body: { expect: rec.expect }
-      })
+      const result = await postDecision(ctx, selected, verb, rec.expect)
       outcome = decisionOutcome(selected.kind, result, null)
     } catch (error) {
       outcome = decisionOutcome(selected.kind, null, error)
@@ -420,8 +402,7 @@ function ReviewDialog({ ctx, profile, activation, connectionId, selected, refres
     body = jsx(ReviewBody, { rec: preview.data, fallbackCreatedAt: selected.created_at })
   }
 
-  // ⌘/Ctrl+Enter approves and ⌘/Ctrl+Backspace rejects, through the same gate as the buttons. A held key's
-  // auto-repeat is ignored: a chord still held from opening the row must not approve once the preview lands.
+  // A chord still held from opening the row must not approve once the preview lands.
   // No ⌘/Ctrl+R for Preview again: Desktop's main process claims that chord before the page sees it.
   function onDialogKeyDown(event) {
     if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return
@@ -500,11 +481,7 @@ function chatMismatch({ profile, connectionId }) {
   return { sessionId, reason: '' }
 }
 
-// Puts a slash command in the focused chat's input and the caret after it, for the user to finish (`<id>`)
-// and send; never sends it. A new chat with no message yet counts. Refuses, with a toast, instead of writing
-// somewhere wrong: no chat input on screen, a chat that belongs to another profile or Hermes than this pane (see chatMismatch), or text already in the
-// input (the composer's own prefix insert would turn that text into the command's argument). The chat is
-// checked again after reading its draft, since focus can move while that is answered.
+// Focus or gateway ownership can change while the draft read is in flight.
 async function stageCommandInComposer(command, conn) {
   const say = message => host.notify({ kind: 'warning', message })
   const composer = host.composer
@@ -569,10 +546,7 @@ function commands(verb, kinds, conn) {
   ]).filter(Boolean)
 }
 
-// Writes whose approval stopped partway: core's `needs_review` counts, per kind plus "total", for both
-// kinds whatever the filter. Those writes are not in `items` or `counts` and cannot be approved; a
-// person checks the files and closes each one with `/<kind> reject <id>`. Clicking a command puts it in
-// the chat input without sending it.
+// Core's needs_review counts cover both kinds even when the list is filtered.
 function NeedsReviewBanner({ counts, conn }) {
   const one = counts.total === 1
   const kinds = ['memory', 'skills'].filter(kind => counts[kind] > 0)
@@ -620,7 +594,6 @@ function useConnection() {
 
 const currentConnectionId = () => host.state.connectionId?.get?.() ?? null
 
-// Whether the host still routes to the connection a component was mounted for.
 function isConnection({ profile, activation, connectionId }) {
   return host.state.profile.get() === profile && gatewayActivationEpoch() === activation
     && currentConnectionId() === connectionId
@@ -642,15 +615,16 @@ function usePendingPushSync({ profile, activation, connectionId }) {
   const queryClient = useQueryClient()
   useEffect(() => {
     if (typeof host.onEvent !== 'function') return undefined
-    const key = JSON.stringify([profile, activation, connectionId])
+    const conn = { profile, activation, connectionId }
+    const queryKey = pendingKey(conn)
+    const key = JSON.stringify(queryKey)
     const refresh = () => {
       pushTimers.delete(key)
-      if (isConnection({ profile, activation, connectionId })) {
-        queryClient.invalidateQueries({ queryKey: [PLUGIN, 'pending', profile, activation, connectionId] })
+      if (isConnection(conn)) {
+        queryClient.invalidateQueries({ queryKey })
       }
     }
-    // Each event pushes the refresh back, but never past PUSH_MAX_WAIT_MS after the first one, so steady
-    // traffic (turns ending in several chats) still refreshes.
+    // A continuous stream of events must not postpone the refresh indefinitely.
     const onPush = () => {
       const now = Date.now()
       const pending = pushTimers.get(key)
@@ -667,7 +641,9 @@ function usePendingPushSync({ profile, activation, connectionId }) {
 // the pending lists last mounted with (Desktop has one per window), and act only on the current connection.
 let appQueryClient = null
 
-const currentPendingKey = () => [PLUGIN, 'pending', host.state.profile.get(), gatewayActivationEpoch(), currentConnectionId()]
+const currentPendingKey = () => pendingKey({
+  profile: host.state.profile.get(), activation: gatewayActivationEpoch(), connectionId: currentConnectionId()
+})
 
 function showPane() {
   host.revealPane(PANE_ID)
@@ -687,13 +663,13 @@ function pendingDetail() {
 
 // The pending list for one filter. A failed read shows nothing from an earlier read: react-query keeps
 // the last good data on error, and showing those counts as current would be wrong.
-function usePendingList(ctx, { profile, activation, connectionId }, filter, page = 1) {
+function usePendingList(ctx, conn, filter, page = 1) {
   const paneVisible = usePaneVisible()
   const queryClient = useQueryClient()
   useEffect(() => { appQueryClient = queryClient }, [queryClient])
-  usePendingPushSync({ profile, activation, connectionId })
+  usePendingPushSync(conn)
   const list = useQuery({
-    queryKey: [PLUGIN, 'pending', profile, activation, connectionId, filter, page],
+    queryKey: [...pendingKey(conn), filter, page],
     queryFn: () => ctx.rest(`/pending?kind=${filter}&page=${page}`),
     refetchInterval: paneVisible ? VISIBLE_POLL_MS : HIDDEN_POLL_MS,
     retry: retryOnce
@@ -738,10 +714,10 @@ async function runBulkReject(ctx, targets, scope, stillHere) {
     else return false
     return true
   }
-  for (const { kind, id } of targets) {
+  for (const item of targets) {
     if (!stillHere()) return null
     try {
-      const preview = await ctx.rest(`/pending/${kind}/${id}`)
+      const preview = await fetchPreview(ctx, item)
       if (!stillHere()) return null
       if (!preview?.decisions_enabled) return { ...tally, halted: DECISION_TITLE }
       if (!preview.expect) {
@@ -749,9 +725,7 @@ async function runBulkReject(ctx, targets, scope, stillHere) {
         continue
       }
       if (preview.expect.profile !== scope) return { ...tally, halted: MOVED }
-      const res = await ctx.rest(`/pending/${kind}/${id}/reject`, {
-        method: 'POST', body: { expect: preview.expect }
-      })
+      const res = await postDecision(ctx, item, 'reject', preview.expect)
       if (!stillHere()) return null
       if (!settled(res)) tally.failed++
     } catch (error) {
@@ -769,7 +743,6 @@ async function runBulkReject(ctx, targets, scope, stillHere) {
 const writes = n => (n === 1 ? '1 write' : `${n} writes`)
 const wasWere = n => (n === 1 ? 'was' : 'were')
 
-// The toast for a finished run. `done`: nothing selected is still pending, so select mode can end.
 function bulkSummary(total, tally) {
   const { rejected, approved, gone, review, failed, halted } = tally
   const done = !halted && failed === 0
@@ -826,17 +799,17 @@ function ScopedPane({ ctx, profile, activation, connectionId }) {
   const [checked, setChecked] = useState([])
   const [bulkBusy, setBulkBusy] = useState(false)
   const bulkInFlight = useRef(false)
-  // Set when Select or Done switches mode from a click: see the focus effect below.
   const refocusAfterSelect = useRef(false)
   // Where keyboard focus goes when the dialog closes: the row that opened it, or after a decision removed
   // that row, the row now in its place. `paneRef` is the fallback and tells whether this scope still shows.
   const paneRef = useRef(null)
   const opener = useRef(null)
-  const { list, failed, data } = usePendingList(ctx, { profile, activation, connectionId }, filter, page)
+  const conn = { profile, activation, connectionId }
+  const { list, failed, data } = usePendingList(ctx, conn, filter, page)
   const queryClient = useQueryClient()
   // After a decision every cached list page of this connection is out of date, not only the one shown
   // (the badge's, other filters', other pages').
-  const refreshLists = () => queryClient.invalidateQueries({ queryKey: [PLUGIN, 'pending', profile, activation, connectionId] })
+  const refreshLists = () => queryClient.invalidateQueries({ queryKey: pendingKey(conn) })
   const items = data?.items ?? []
   // A decision can empty the last page: show the page that is now last instead. Always step back at least one
   // page, so a reply whose `total` disagrees with its empty `items` cannot set the same page on every render.
@@ -846,7 +819,7 @@ function ScopedPane({ ctx, profile, activation, connectionId }) {
   const pageKeys = items.map(itemKey)
   const visibleChecked = checked.filter(k => pageKeys.includes(k))
   const allChecked = pageKeys.length > 0 && visibleChecked.length === pageKeys.length
-  const sameConnection = () => isConnection({ profile, activation, connectionId })
+  const sameConnection = () => isConnection(conn)
   // False once the pane unmounts (closed, or replaced on a switch): a bulk run stops at the next row.
   const mounted = useRef(true)
   useEffect(() => () => { mounted.current = false }, [])
@@ -935,7 +908,6 @@ function ScopedPane({ ctx, profile, activation, connectionId }) {
   } else {
     body = jsx('div', {
       className: 'flex flex-col gap-1',
-      // ArrowUp / ArrowDown step between rows (Tab still visits each one).
       onKeyDown: event => {
         if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
         if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
@@ -1025,7 +997,7 @@ function ScopedPane({ ctx, profile, activation, connectionId }) {
         })
         : null,
       data ? jsx(Gates, { gates: data.gates }) : null,
-      needsReview ? jsx(NeedsReviewBanner, { counts: needsReview, conn: { profile, activation, connectionId } }) : null,
+      needsReview ? jsx(NeedsReviewBanner, { counts: needsReview, conn }) : null,
       jsxs('div', {
         className: 'flex items-center gap-1',
         children: [
@@ -1097,10 +1069,8 @@ function Pager({ data, disabled = false, setPage }) {
   })
 }
 
-// A click reveals the pane, as the Show palette row and keybind action do. The SDK can reveal a pane but not
-// hide one, so this is a plain button, not a toggle. On an older Desktop without revealPane the count stays
-// plain text. The button's classes are the host's own status-bar button classes (Kanban's count uses the
-// same), so they are in the host's compiled CSS.
+// The SDK can reveal a pane but not hide it, so this is not a toggle.
+// Use the host's status-bar button classes so the styles are already compiled.
 function PendingBadge({ ctx }) {
   const { failed, data } = usePendingList(ctx, useConnection(), 'all')
   const children = data ? `pending writes: ${data.counts.total}` : 'pending writes: –'
@@ -1125,9 +1095,8 @@ function PendingBadge({ ctx }) {
 
 export default {
   id: PLUGIN,
-  // Same name as the server package (plugin.yaml `name`, dashboard/manifest.json `name`); see README "Names".
+  // Must match the server and dashboard manifests for Desktop to pair the package halves.
   name: PLUGIN,
-  // Opt-in: inventories in Capabilities > Plugins and stays off until the user turns it on.
   defaultEnabled: false,
   register(ctx) {
     ctx.register({
@@ -1143,8 +1112,7 @@ export default {
       order: 125,
       render: () => jsx(PendingBadge, { ctx })
     })
-    // Older Desktops have no revealPane, so no Show action there. Both chords ship unbound: the obvious ones
-    // are taken (⌘⇧L is Show browser), and the user can bind them in Settings > Keybinds.
+    // Leave default chords unbound so they don't collide with the host's shortcuts.
     if (typeof host.revealPane === 'function') {
       ctx.register({
         id: 'keybind-show',

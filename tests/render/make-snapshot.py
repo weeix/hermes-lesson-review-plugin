@@ -1,11 +1,4 @@
-"""Writes tests/render/.generated/snapshot.json for the render smoke test (run.mjs) without a server.
-
-The responses are the plugin's own routes over the FakeAdapter fixtures, run in-process with FastAPI's
-TestClient (no socket, no background process). The paths written here are the ones run.mjs requests;
-run.mjs fails loudly when one is missing.
-
-    .venv/bin/python tests/render/make-snapshot.py
-"""
+"""Generate the static render fixture from actual route responses to keep their shapes in sync."""
 
 from __future__ import annotations
 

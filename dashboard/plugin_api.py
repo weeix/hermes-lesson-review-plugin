@@ -18,9 +18,7 @@ from fastapi import APIRouter, Body, HTTPException, Query
 
 
 def _load_adapter_module():
-    """Load ``adapter.py`` beside this file. Hermes imports this file by path, not as a package,
-    so a relative import is not available; registering the module by name keeps dataclass /
-    annotation resolution working."""
+    """Hermes loads this file by path, without a package for relative imports."""
     name = "lesson_review_adapter"
     if name in sys.modules:
         return sys.modules[name]
@@ -54,11 +52,7 @@ def _mapping(value: Any) -> Mapping:
 
 
 def _decisions_enabled() -> bool:
-    """Whether approve/reject are allowed for the profile this request is scoped to.
-
-    The legacy ``config`` subtree is read after ``settings``, as ``ctx.get_config`` reads it. Never
-    inferred from a client request or a staging flag.
-    """
+    """Follow ``ctx.get_config`` precedence for the request's profile."""
     if ADAPTER.name != "core":
         return False
     if os.environ.get("LESSON_REVIEW_ALLOW_DECISIONS", "").strip().lower() in _OFF_VALUES:
@@ -71,7 +65,9 @@ def _decisions_enabled() -> bool:
         config = load_config_readonly()
     except Exception:
         return False
-    entry = _mapping(_mapping(_mapping(_mapping(config).get("plugins")).get("entries")).get(PLUGIN_ID))
+    plugins = _mapping(_mapping(config).get("plugins"))
+    entries = _mapping(plugins.get("entries"))
+    entry = _mapping(entries.get(PLUGIN_ID))
     for section in ("settings", "config"):
         values = _mapping(entry.get(section))
         if "allow_decisions" in values:
@@ -138,14 +134,10 @@ def decide_pending(kind: str, pending_id: str, decision: str, body: dict | None 
 
 
 def _emit_pending_changed(kind: str, status: str) -> None:
-    """Tell Desktop windows to refresh their pending lists now instead of at the next poll.
+    """A ``needs_review`` reply can repeat an earlier marker, prompting an extra read.
 
-    Sent for ``applied``, ``rejected`` and ``needs_review``. A ``needs_review`` reply can repeat an
-    earlier marker without changing anything; the extra refresh costs one list read. Best effort:
-    the event reaches the windows of the gateway process this route runs in, and a route served
-    from a plugin host (``plugins.isolation: host``, or another profile's host) reaches none, so
-    those windows only see the change when they poll. Carries only ``kind`` and ``status``, never
-    proposal text, ids or expect tokens, since every window on the gateway gets it.
+    A separate plugin host cannot reach gateway windows, which fall back to polling.
+    Never include proposal text, IDs, or expect tokens: every gateway window gets this event.
     """
     try:
         from hermes_cli.plugin_events import broadcast_plugin_event

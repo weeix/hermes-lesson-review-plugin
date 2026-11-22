@@ -14,7 +14,7 @@ export const KEYBINDS_AREA = 'keybinds'
 export const PALETTE_AREA = 'palette'
 export const PANES_AREA = 'panes'
 export const STATUSBAR_AREAS = { right: 'statusBar.right' }
-// notify() records the toast; the real host shows it in the notification stack.
+
 export const host = {
   state: {
     profile: { get: () => globalThis.__WR_PROFILE__ },
@@ -51,11 +51,11 @@ export const host = {
   paneVisibility() {
     return { get: () => globalThis.__WR_PANE_VISIBLE__ ?? true }
   },
-  // Records the pane ids it was asked to reveal.
+
   revealPane(paneId) {
     ;(globalThis.__WR_REVEALS__ ||= []).push(paneId)
   },
-  // Listeners by event type in `__WR_LISTENERS__`, so a test can emit gateway events.
+
   onEvent(type, handler) {
     const map = (globalThis.__WR_LISTENERS__ ||= new Map())
     let set = map.get(type)
@@ -85,7 +85,7 @@ export function useQuery({ queryKey }) {
   return { isPending: false, isError: false, data: entry.data, refetch() {} }
 }
 
-// The static render never decides, so nothing is invalidated.
+
 export const useQueryClient = () => ({ invalidateQueries() {} })
 
 export function Button(props) {

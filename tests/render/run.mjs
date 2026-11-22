@@ -1,20 +1,5 @@
-// Render smoke test for desktop/plugin.js. Only @hermes/plugin-sdk is stubbed (tests/render/sdk-stub.mjs);
-// React, react/jsx-runtime and the plugin source are the real ones. Nothing is generated from backend
-// data: backend values reach the plugin only as query results (sdk-stub.mjs) and through globalThis
-// (react-shim.mjs). The one generated file is a copy of desktop/plugin.js whose SDK and react imports
-// point at the stubs, with a test-only export of the decision helpers appended.
-//
-// Interaction, focus and dismissal are checked in interact.mjs and focus.mjs (jsdom); this file checks
-// static markup.
-//
-// Data comes from a live backend, or from a snapshot of the plugin's own route responses. Failure
-// states are synthesized per scenario, shaped the way the desktop bridge throws them
-// (apps/desktop/electron/api-transport.ts: Error("<status>: <body>") with statusCode).
-//
-// Usage (see README "Running the checks"):
-//   WR_TOKEN=<session token> WR_BASE=http://127.0.0.1:9431 node tests/render/run.mjs      (live backend)
-//   WR_SNAPSHOT=tests/render/.generated/snapshot.json node tests/render/run.mjs          (no server)
-// The snapshot is written by tests/render/make-snapshot.py from the plugin's own routes.
+// Static render tests use route responses, not fixtures embedded in the generated plugin copy.
+// To exercise a live backend instead of a snapshot, set WR_BASE and WR_TOKEN.
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -225,7 +210,8 @@ failureChecks('IPC: session refused (401)', failedListQueries(ipcError(401, 'Una
     badgeTitle: 'Hermes refused this session (HTTP 401). Reconnect, then Retry.' })
 failureChecks('IPC: no Write Review API (503)',
   failedListQueries(ipcError(503, '{"detail":"This Hermes build does not provide the Write Review API. RAW-ERROR-BODY"}')),
-  { message: 'Update Hermes to use Lesson review.', badgeTitle: 'Update Hermes to use Lesson review.' })
+  { message: 'Lesson review needs a Hermes backend with the Write Review API. See the plugin README.',
+    badgeTitle: 'Lesson review needs a Hermes backend with the Write Review API. See the plugin README.' })
 failureChecks('IPC: network down (no status)', failedListQueries(new Error("Error invoking remote method 'hermes:api': Error: connect ECONNREFUSED RAW-ERROR-BODY")),
   { message: 'Could not reach Hermes.', badgeTitle: 'Could not reach Hermes.' })
 

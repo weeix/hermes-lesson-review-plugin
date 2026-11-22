@@ -1,9 +1,4 @@
-"""Mounted HTTP tests: the plugin's routes served by Hermes' own web app (hermes_cli.web_server.app).
-
-Unlike test_routes.py (a bare router), these go through Hermes' middleware: the session-token auth
-gate, the plugin enable gate, and the ``?profile=`` scope (see README "Running the checks"). Each
-scenario runs tests/mounted_probe.py in a fresh process.
-"""
+"""Exercise Hermes' auth, enablement and profile scoping, which a bare router can't check."""
 
 from __future__ import annotations
 

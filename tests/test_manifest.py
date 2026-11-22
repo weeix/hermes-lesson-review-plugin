@@ -1,7 +1,3 @@
-"""Naming contract (README "Names"): plugin.yaml, dashboard/manifest.json and the desktop half share one
-name. The desktop half's name is checked on the imported plugin object by tests/render/run.mjs.
-"""
-
 from __future__ import annotations
 
 import json

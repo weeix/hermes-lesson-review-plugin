@@ -1,5 +1,3 @@
-// Shared by run.mjs, interact.mjs and focus.mjs: a generated copy of desktop/plugin.js wired to test
-// stand-ins, a jsdom window, a PASS/FAIL printer and small fixtures.
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -14,8 +12,7 @@ function replaceOnce(text, from, to) {
   return text.replace(from, to)
 }
 
-// Writes .generated/<name>: plugin.js with its SDK import (and optionally react) pointed at stand-ins in
-// this folder, plus `extra` appended (test-only exports). desktop/plugin.js itself is never changed.
+// Append test-only exports to the copy so the shipped plugin keeps only its SDK entry point.
 export async function loadPluginCopy(name, { sdk, react = null, extra = '' }) {
   const src = readFileSync(PLUGIN_SRC, 'utf8')
   const specifiers = [...src.matchAll(/^import .* from '([^']+)'$/gm)].map(m => m[1]).sort()
@@ -42,7 +39,7 @@ export async function setupDom() {
   return w
 }
 
-// check() prints one PASS/FAIL line; finish() prints the count and sets the exit code.
+
 export function checker(label) {
   let passed = 0
   let failed = 0

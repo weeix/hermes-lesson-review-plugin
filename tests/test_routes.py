@@ -1,9 +1,4 @@
-"""Route-level tests: the plugin's FastAPI router mounted on a bare app (no Hermes middleware).
-
-These cover the route rules (input validation, status codes, the decision gate) and need no Hermes
-checkout. Auth, the plugin enable gate and profile scoping run in Hermes' own app and are covered by
-tests/test_mounted.py (needs HERMES_SRC).
-"""
+"""A bare router requires no Hermes checkout; use the mounted suite for host middleware."""
 
 from __future__ import annotations
 

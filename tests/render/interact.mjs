@@ -1,7 +1,4 @@
-// Interaction checks for the review dialog: real React DOM in jsdom, the host's real react-query, the SDK
-// stub for everything else. Covers the transition static markup cannot: after a refused decision, Preview
-// again must not let a decision use the preview being replaced, and a failed refresh leaves nothing to
-// approve. Run: (cd tests/render && node interact.mjs)
+// Exercise the refetch window when React Query still serves a preview that must not be actionable.
 import { checker, deferred, httpError, loadPluginCopy, memoryPreview, setupDom } from './harness.mjs'
 
 await setupDom()
