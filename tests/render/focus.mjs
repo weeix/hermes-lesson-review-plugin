@@ -770,4 +770,31 @@ globalThis.__WR_PANE_VISIBLE__ = undefined
   check('nothing watching the list any more: no count from the cached copy', show.detail() === '', show.detail())
 }
 
+// ---- 23. the status-bar badge: a button that reveals the pane; plain text where Desktop cannot reveal ----
+{
+  const { host } = await import('./sdk-radix.mjs')
+  const s = await mountPane({ withBadge: true })
+  const badge = s.host.querySelector('[data-wr-badge]')
+  check('badge: a type=button showing the count', badge?.tagName === 'BUTTON' && badge.type === 'button'
+    && badge.textContent === 'pending writes: 3', badge?.outerHTML)
+  check('badge: not a toggle (the SDK cannot hide a pane)', !badge?.hasAttribute('aria-pressed'))
+  check('badge: its title names no chord', /^Show the Lesson review pane/.test(badge?.title ?? '') && !/Shift/.test(badge?.title ?? ''), badge?.title)
+  globalThis.__WR_REVEALS__ = []
+  await clickEl(badge)
+  check('badge click reveals this plugin\'s pane', JSON.stringify(globalThis.__WR_REVEALS__) === JSON.stringify(['lesson-review:pane']),
+    JSON.stringify(globalThis.__WR_REVEALS__))
+  await act(async () => s.root.unmount())
+  const reveal = host.revealPane
+  delete host.revealPane
+  try {
+    const old = await mountPane({ withBadge: true })
+    const text = old.host.querySelector('span[title="Staged memory/skill writes awaiting review"]')
+    check('older Desktop (no revealPane): the count is plain text, no badge button',
+      !old.host.querySelector('[data-wr-badge]') && text?.textContent === 'pending writes: 3', text?.outerHTML)
+    await act(async () => old.root.unmount())
+  } finally {
+    host.revealPane = reveal
+  }
+}
+
 finish()

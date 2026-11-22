@@ -1,7 +1,7 @@
 // Lesson review: desktop half of the lesson-review plugin.
 //
 // Lists staged memory/skill writes from the backend (/api/plugins/lesson-review/pending) in a pane and
-// paints a count badge in the status bar. Show and Refresh are also command palette rows and keybind actions
+// paints a count badge in the status bar; clicking the badge reveals the pane. Show and Refresh are also command palette rows and keybind actions
 // (unbound by default). Selecting a row opens a review dialog for that one record:
 // the exact proposal, per-op diffs, and Approve / Reject. Writes whose approval stopped partway are not
 // listed; a banner gives their count and says which slash command closes them.
@@ -1097,13 +1097,29 @@ function Pager({ data, disabled = false, setPage }) {
   })
 }
 
+// A click reveals the pane, as the Show palette row and keybind action do. The SDK can reveal a pane but not
+// hide one, so this is a plain button, not a toggle. On an older Desktop without revealPane the count stays
+// plain text. The button's classes are the host's own status-bar button classes (Kanban's count uses the
+// same), so they are in the host's compiled CSS.
 function PendingBadge({ ctx }) {
   const { failed, data } = usePendingList(ctx, useConnection(), 'all')
-  return jsx('span', {
-    className: 'px-1.5 text-[0.6875rem]',
-    style: MUTED,
-    title: failed ? failed.text : 'Staged memory/skill writes awaiting review',
-    children: data ? `pending writes: ${data.counts.total}` : 'pending writes: –'
+  const children = data ? `pending writes: ${data.counts.total}` : 'pending writes: –'
+  if (typeof host.revealPane !== 'function') {
+    return jsx('span', {
+      className: 'px-1.5 text-[0.6875rem]',
+      style: MUTED,
+      title: failed ? failed.text : 'Staged memory/skill writes awaiting review',
+      children
+    })
+  }
+  return jsx('button', {
+    type: 'button',
+    'data-wr-badge': '',
+    onClick: showPane,
+    className: 'inline-flex h-full items-center gap-1 rounded-none px-1.5 text-[0.6875rem] transition-colors '
+      + 'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground',
+    title: failed ? failed.text : 'Show the Lesson review pane: staged memory/skill writes awaiting review',
+    children
   })
 }
 
