@@ -138,10 +138,14 @@ def decide_pending(kind: str, pending_id: str, decision: str, body: dict | None 
 
 
 def _emit_pending_changed(kind: str, status: str) -> None:
-    """Notify connected Desktop windows to invalidate their pending-writes queries immediately.
+    """Tell Desktop windows to refresh their pending lists now instead of at the next poll.
 
-    Carries only subsystem ``kind`` and outcome ``status`` — never proposal text, ids, or expect
-    tokens — since ``broadcast_plugin_event`` reaches every window on the gateway process.
+    Sent for ``applied``, ``rejected`` and ``needs_review``. A ``needs_review`` reply can repeat an
+    earlier marker without changing anything; the extra refresh costs one list read. Best effort:
+    the event reaches the windows of the gateway process this route runs in, and a route served
+    from a plugin host (``plugins.isolation: host``, or another profile's host) reaches none, so
+    those windows only see the change when they poll. Carries only ``kind`` and ``status``, never
+    proposal text, ids or expect tokens, since every window on the gateway gets it.
     """
     try:
         from hermes_cli.plugin_events import broadcast_plugin_event

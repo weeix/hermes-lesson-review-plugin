@@ -13,16 +13,20 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 
 const PLUGIN = 'lesson-review'
 const PANE_ID = `${PLUGIN}:pane`
-// Lists refresh on gateway events (`PUSH_EVENTS`): a decision in any window (dashboard/plugin_api.py emits
-// `pending.changed`) and the end of an agent turn, which is when a turn's writes have been staged. Polling
-// is the fallback for what sends no event (a slash command, the CLI, another process): 30 s while the
-// pane shows, 60 s while it doesn't.
+// Lists refresh on gateway events (`PUSH_EVENTS`): a decision made in a pane (dashboard/plugin_api.py emits
+// `pending.changed`) and the end of an agent turn this window is attached to, when that turn's writes have
+// been staged. Both are best effort. Polling covers what sends no event, or an event this window does not
+// get: a slash command (including the banner's reject), the CLI, a turn in a session this window is not
+// attached to, a background review, a route served from a plugin host. 30 s while the pane shows, 60 s
+// while it doesn't.
 const VISIBLE_POLL_MS = 30000
 const HIDDEN_POLL_MS = 60000
 const PUSH_EVENTS = [`plugin.${PLUGIN}.pending.changed`, 'message.complete']
 // Events come in bursts (a bulk reject sends one per write; the pane and the badge both listen): the lists
-// of one connection refresh once, this long after the last event.
+// of one connection refresh once, PUSH_SETTLE_MS after the last event and at most PUSH_MAX_WAIT_MS after
+// the first.
 const PUSH_SETTLE_MS = 300
+const PUSH_MAX_WAIT_MS = 2000
 const FILTERS = [
   { id: 'all', label: 'All' },
   { id: 'memory', label: 'Memory' },
@@ -337,7 +341,7 @@ function focusDialog(event) {
 // One record's review. ScopedPane mounts it only while a row is selected in the current scope, so a profile
 // or gateway switch unmounts it with its state. Esc, the X and an outside click are ignored while a decision is
 // in flight; a reply that arrives after the scope changed is dropped.
-function ReviewDialog({ ctx, profile, activation, selected, refreshList, onClose, restoreFocus }) {
+function ReviewDialog({ ctx, profile, activation, connectionId, selected, refreshList, onClose, restoreFocus }) {
   const [decision, setDecision] = useState(IDLE)
   const inFlight = useRef(false)
   // True once a decision closed the dialog, so focus goes to the next row instead of the removed one.
@@ -345,7 +349,7 @@ function ReviewDialog({ ctx, profile, activation, selected, refreshList, onClose
   // Set from the Preview again click until the refetch settles: no decision may use the preview being replaced.
   const refreshing = useRef(false)
   const preview = useQuery({
-    queryKey: [PLUGIN, 'preview', profile, activation, selected.scope, selected.kind, selected.id],
+    queryKey: [PLUGIN, 'preview', profile, activation, connectionId, selected.scope, selected.kind, selected.id],
     queryFn: () => ctx.rest(`/pending/${selected.kind}/${selected.id}`),
     retry: retryOnce
   })
@@ -354,7 +358,7 @@ function ReviewDialog({ ctx, profile, activation, selected, refreshList, onClose
   const rec = preview.isPending || preview.isError ? null : preview.data
   const view = { ...decision, refreshing: decision.refreshing || preview.isFetching === true }
   const retry = preview.isError
-  const sameConnection = () => host.state.profile.get() === profile && gatewayActivationEpoch() === activation
+  const sameConnection = () => isConnection({ profile, activation, connectionId })
   // Radix sends Esc, the X and an outside click here too (onOpenChange), so all are ignored while busy.
   const close = () => { if (!inFlight.current) onClose() }
 
@@ -447,59 +451,94 @@ function ReviewDialog({ ctx, profile, activation, selected, refreshList, onClose
 
 const CODE = { ...MONO, fontSize: '0.75rem' }
 
-// Puts a slash command in the focused chat's input and the caret after it, for the user to finish (`<id>`)
-// and send; never sends it. Refuses, with a toast, instead of writing somewhere wrong: no chat focused, the
-// focused chat in another profile than this pane (the command would act on that profile's store), or text
-// already in the input (the composer's own prefix insert would turn that text into the command's argument).
-async function stageCommandInComposer(command, profile) {
-  const say = message => host.notify({ kind: 'warning', message })
-  const composer = host.composer
+// Why the focused chat is not one this pane's commands may go to, or '' when it is. The command acts on
+// whichever profile and Hermes the chat belongs to, so the chat must have this pane's owner: the same
+// connection and profile (`focusedSessionOwner`; null when the owner is unknown or ambiguous, which is
+// refused). A Desktop without `focusedSessionOwner` can only compare profile names.
+function chatMismatch({ profile, connectionId }) {
   const sessionId = host.state?.focusedSessionId?.get?.() ?? null
-  if (!sessionId || typeof composer?.setDraft !== 'function' || typeof composer?.getDraft !== 'function') {
-    say(`Open a chat first, then click ${command} again.`)
-    return
+  if (!sessionId) return { sessionId, reason: 'none' }
+  const paneProfile = (profile || '').trim() || 'default'
+  const ownerAtom = host.state?.focusedSessionOwner
+  if (typeof ownerAtom?.get === 'function') {
+    const owner = ownerAtom.get()
+    if (!owner) return { sessionId, reason: 'unknown' }
+    if ((owner.profile || 'default') !== paneProfile) return { sessionId, reason: 'profile', other: owner.profile }
+    if ((owner.connectionId || null) !== (connectionId || null)) return { sessionId, reason: 'connection' }
+    return { sessionId, reason: '' }
   }
   const chatProfile = host.state?.focusedSessionProfile?.get?.()
-  if (typeof chatProfile === 'string' && (chatProfile || 'default') !== (profile || 'default')) {
-    say(`The open chat belongs to profile ${chatProfile}, not ${profile || 'default'}. Open a chat in ${profile || 'default'} first.`)
+  if (typeof chatProfile !== 'string') return { sessionId, reason: 'unknown' }
+  if ((chatProfile.trim() || 'default') !== paneProfile) return { sessionId, reason: 'profile', other: chatProfile }
+  return { sessionId, reason: '' }
+}
+
+// Puts a slash command in the focused chat's input and the caret after it, for the user to finish (`<id>`)
+// and send; never sends it. Refuses, with a toast, instead of writing somewhere wrong: no chat focused, a
+// chat that belongs to another profile or Hermes than this pane (see chatMismatch), or text already in the
+// input (the composer's own prefix insert would turn that text into the command's argument). The chat is
+// checked again after reading its draft, since focus can move while that is answered.
+async function stageCommandInComposer(command, conn) {
+  const say = message => host.notify({ kind: 'warning', message })
+  const composer = host.composer
+  const paneProfile = (conn.profile || '').trim() || 'default'
+  const refusal = ({ reason, other }) => ({
+    none: `Open a chat first, then click ${command} again.`,
+    unknown: `Hermes can’t tell which profile the open chat belongs to. Open a chat in ${paneProfile}, then click ${command} again.`,
+    profile: `The open chat belongs to profile ${other || 'default'}, not ${paneProfile}. Open a chat in ${paneProfile} first.`,
+    connection: `The open chat is on another Hermes connection than this pane. Open a chat on this one first.`
+  })[reason]
+  if (typeof composer?.setDraft !== 'function' || typeof composer?.getDraft !== 'function') {
+    say(refusal({ reason: 'none' }))
+    return
+  }
+  const first = chatMismatch(conn)
+  if (first.reason) {
+    say(refusal(first))
     return
   }
   // setDraft keeps the text as given, so `/kind reject ` ends in the space the id goes after.
   const text = command.endsWith('<id>') ? command.slice(0, -'<id>'.length) : command
+  const unreachable = 'Could not reach the chat input. Click into the chat, then try again.'
   try {
-    const draft = await composer.getDraft(sessionId)
+    const draft = await composer.getDraft(first.sessionId)
+    const again = chatMismatch(conn)
+    if (again.reason || again.sessionId !== first.sessionId || !isConnection(conn)) {
+      say(again.reason ? refusal(again) : 'The chat or connection changed. Click the command again.')
+      return
+    }
     if (draft && draft.trim() && draft.trim() !== text.trim()) {
       say(`The chat input already has text. Clear it, then click ${command} again.`)
       return
     }
-    if (!(await composer.setDraft(sessionId, text))) {
-      say('Could not reach the chat input. Click into the chat, then try again.')
+    if (!(await composer.setDraft(first.sessionId, text))) {
+      say(unreachable)
       return
     }
   } catch {
-    say('Could not reach the chat input. Click into the chat, then try again.')
+    say(unreachable)
     return
   }
-  composer.focus?.(sessionId)
+  composer.focus?.(first.sessionId)
 }
 
-function commandChip(kind, verb, profile) {
+function commandChip(kind, verb, conn) {
   const label = `/${kind} ${verb}`
   return jsx('button', {
     type: 'button',
     'data-wr-cmd': label,
     title: `Insert ${label} into the chat input`,
-    onClick: () => { stageCommandInComposer(label, profile) },
+    onClick: () => { stageCommandInComposer(label, conn) },
     className: 'inline-flex items-center rounded px-1 py-px hover:opacity-80',
     style: { ...BORDER, background: 'color-mix(in srgb, var(--ui-text-primary) 6%, transparent)', cursor: 'pointer' },
     children: jsx('code', { style: CODE, children: label })
   }, `${verb}-${kind}`)
 }
 
-function commands(verb, kinds, profile) {
+function commands(verb, kinds, conn) {
   return kinds.flatMap((kind, i) => [
     i ? ' or ' : null,
-    commandChip(kind, verb, profile)
+    commandChip(kind, verb, conn)
   ]).filter(Boolean)
 }
 
@@ -507,7 +546,7 @@ function commands(verb, kinds, profile) {
 // kinds whatever the filter. Those writes are not in `items` or `counts` and cannot be approved; a
 // person checks the files and closes each one with `/<kind> reject <id>`. Clicking a command puts it in
 // the chat input without sending it.
-function NeedsReviewBanner({ counts, profile }) {
+function NeedsReviewBanner({ counts, conn }) {
   const one = counts.total === 1
   const kinds = ['memory', 'skills'].filter(kind => counts[kind] > 0)
   return jsxs('div', {
@@ -529,9 +568,9 @@ function NeedsReviewBanner({ counts, profile }) {
       jsxs('div', {
         children: [
           `Check the files by hand, then close ${one ? 'it' : 'each one'} with `,
-          ...commands('reject <id>', kinds, profile),
+          ...commands('reject <id>', kinds, conn),
           '. ',
-          ...commands('pending', kinds, profile),
+          ...commands('pending', kinds, conn),
           one ? ' shows its id.' : ' shows their ids.',
           ' Click a command to put it in the chat input.'
         ]
@@ -540,9 +579,24 @@ function NeedsReviewBanner({ counts, profile }) {
   })
 }
 
-// The profile and gateway activation every query is keyed by; a change of either is a new connection.
+// What every query is keyed by: the profile, the gateway activation and the connection (registry source).
+// A change of any is a new connection. The epoch alone is not enough: Desktop bumps it when a switch
+// starts, before the route moves, so two gateways serving the same profile name can share an epoch.
 function useConnection() {
-  return { profile: useValue(host.state.profile), activation: useGatewayActivationEpoch() }
+  const connectionAtom = host.state.connectionId
+  return {
+    profile: useValue(host.state.profile),
+    activation: useGatewayActivationEpoch(),
+    connectionId: connectionAtom ? (useValue(connectionAtom) ?? null) : null
+  }
+}
+
+const currentConnectionId = () => host.state.connectionId?.get?.() ?? null
+
+// Whether the host still routes to the connection a component was mounted for.
+function isConnection({ profile, activation, connectionId }) {
+  return host.state.profile.get() === profile && gatewayActivationEpoch() === activation
+    && currentConnectionId() === connectionId
 }
 
 function usePaneVisible() {
@@ -550,39 +604,45 @@ function usePaneVisible() {
   return atom ? Boolean(useValue(atom)) : true
 }
 
-// One timer per connection, shared by every listener, so a burst of events refreshes the lists once.
+// One timer per connection, shared by every listener, so a burst of events refreshes the lists once. A timer
+// left when the last listener unmounts is harmless: it refreshes only a connection still current.
 const pushTimers = new Map()
 
 // Refreshes this connection's cached pending lists on the `PUSH_EVENTS`. Subscribes with `host.onEvent`, not
 // `ctx.onEvent`: the effect's cleanup disposes it, and `ctx.onEvent` would also keep every disposer until the
 // plugin unloads, one per pane or badge mount.
-function usePendingPushSync({ profile, activation }) {
+function usePendingPushSync({ profile, activation, connectionId }) {
   const queryClient = useQueryClient()
   useEffect(() => {
     if (typeof host.onEvent !== 'function') return undefined
-    const key = JSON.stringify([profile, activation])
+    const key = JSON.stringify([profile, activation, connectionId])
     const refresh = () => {
       pushTimers.delete(key)
-      if (host.state.profile.get() === profile && gatewayActivationEpoch() === activation) {
-        queryClient.invalidateQueries({ queryKey: [PLUGIN, 'pending', profile, activation] })
+      if (isConnection({ profile, activation, connectionId })) {
+        queryClient.invalidateQueries({ queryKey: [PLUGIN, 'pending', profile, activation, connectionId] })
       }
     }
+    // Each event pushes the refresh back, but never past PUSH_MAX_WAIT_MS after the first one, so steady
+    // traffic (turns ending in several chats) still refreshes.
     const onPush = () => {
-      clearTimeout(pushTimers.get(key))
-      pushTimers.set(key, setTimeout(refresh, PUSH_SETTLE_MS))
+      const now = Date.now()
+      const pending = pushTimers.get(key)
+      if (pending && now - pending.first >= PUSH_MAX_WAIT_MS - PUSH_SETTLE_MS) return
+      clearTimeout(pending?.timer)
+      pushTimers.set(key, { first: pending?.first ?? now, timer: setTimeout(refresh, PUSH_SETTLE_MS) })
     }
     const offs = PUSH_EVENTS.map(event => host.onEvent(event, onPush)).filter(off => typeof off === 'function')
     return () => { for (const off of offs) off() }
-  }, [queryClient, profile, activation])
+  }, [queryClient, profile, activation, connectionId])
 }
 
 // The pending list for one filter. A failed read shows nothing from an earlier read: react-query keeps
 // the last good data on error, and showing those counts as current would be wrong.
-function usePendingList(ctx, { profile, activation }, filter, page = 1) {
+function usePendingList(ctx, { profile, activation, connectionId }, filter, page = 1) {
   const paneVisible = usePaneVisible()
-  usePendingPushSync({ profile, activation })
+  usePendingPushSync({ profile, activation, connectionId })
   const list = useQuery({
-    queryKey: [PLUGIN, 'pending', profile, activation, filter, page],
+    queryKey: [PLUGIN, 'pending', profile, activation, connectionId, filter, page],
     queryFn: () => ctx.rest(`/pending?kind=${filter}&page=${page}`),
     refetchInterval: paneVisible ? VISIBLE_POLL_MS : HIDDEN_POLL_MS,
     retry: retryOnce
@@ -592,49 +652,63 @@ function usePendingList(ctx, { profile, activation }, filter, page = 1) {
 }
 
 function PendingPane({ ctx }) {
-  const { profile, activation } = useConnection()
-  return jsx(ScopedPane, { ctx, profile, activation }, JSON.stringify([profile, activation]))
+  const { profile, activation, connectionId } = useConnection()
+  return jsx(ScopedPane, { ctx, profile, activation, connectionId }, JSON.stringify([profile, activation, connectionId]))
 }
 
 const itemKey = item => `${item.kind}:${item.id}`
 
-// Failures that no later item can avoid: session refused, store refused, decisions off, Hermes unreachable.
-const BULK_HALT = new Set([null, 401, 403, 409, 501, 502, 503, 504])
+// Failures that no later item can avoid: session refused, decisions off, Hermes unreachable. A 409 (store
+// refused) is not here: it can be one kind's store or one record's lock while the next row would go through.
+const BULK_HALT = new Set([null, 401, 403, 501, 502, 503, 504])
+const MOVED = 'The list is out of date: Hermes now answers for another profile. Nothing more was rejected.'
 
 // Bulk rejection is the one multi-item action that needs no diff reading: every selected row is previewed
 // fresh for its `expect` token, then rejected one by one. Approve stays inside ReviewDialog so no proposal
 // is ever written without showing its full content and diff first. The fresh `expect` pins the record as it
 // is at reject time, not as listed; a row shows no content, so there is no earlier version the user read.
+// `scope` is the profile identity the list came from: a preview whose `expect.profile` differs was answered
+// by another Hermes home (a switch under way), so the run stops before rejecting anything there.
 //
 // Tally: `rejected` (by this run, or already rejected elsewhere), `approved` (approved elsewhere first),
-// `gone` (no longer pending), `failed` (still pending). `halted`: why the run stopped early, since every
-// remaining item would fail the same way; null when it went through the list. null overall: the scope changed.
-async function runBulkReject(ctx, targets, sameConnection) {
-  const tally = { rejected: 0, approved: 0, gone: 0, failed: 0, halted: null }
+// `gone` (no longer pending), `review` (now needs review: the banner, not this list), `failed` (still
+// pending). `halted`: why the run stopped early; null when it went through the list. null overall: the
+// connection changed or the pane closed.
+async function runBulkReject(ctx, targets, scope, stillHere) {
+  const tally = { rejected: 0, approved: 0, gone: 0, review: 0, failed: 0, halted: null }
+  // A decision reply, or a preview of a write that is no longer pending (200, no `expect`).
+  const settled = reply => {
+    const status = reply?.status
+    const prior = status === 'already_resolved' ? reply.prior : null
+    if (status === 'rejected' || prior === 'rejected') tally.rejected++
+    else if (prior === 'applied') tally.approved++
+    else if (status === 'already_resolved') tally.gone++
+    else if (status === 'needs_review') tally.review++
+    else return false
+    return true
+  }
   for (const { kind, id } of targets) {
-    if (!sameConnection()) return null
+    if (!stillHere()) return null
     try {
       const preview = await ctx.rest(`/pending/${kind}/${id}`)
-      if (!sameConnection()) return null
+      if (!stillHere()) return null
       if (!preview?.decisions_enabled) return { ...tally, halted: DECISION_TITLE }
       if (!preview.expect) {
-        tally.failed++
+        if (!settled(preview)) tally.failed++
         continue
       }
+      if (preview.expect.profile !== scope) return { ...tally, halted: MOVED }
       const res = await ctx.rest(`/pending/${kind}/${id}/reject`, {
         method: 'POST', body: { expect: preview.expect }
       })
-      if (!sameConnection()) return null
-      const prior = res?.status === 'already_resolved' ? res.prior : null
-      if (res?.status === 'rejected' || prior === 'rejected') tally.rejected++
-      else if (prior === 'applied') tally.approved++
-      else if (res?.status === 'already_resolved') tally.gone++
-      else tally.failed++
+      if (!stillHere()) return null
+      if (!settled(res)) tally.failed++
     } catch (error) {
-      const failure = describeFailure(error)
-      // A preview 404 is a record resolved elsewhere; "Plugin not found" (no `gone`) is the plugin turned off.
-      if (failure.gone) tally.gone++
-      else if (httpStatus(error) === 404 || BULK_HALT.has(httpStatus(error))) return { ...tally, halted: failure.text }
+      const status = httpStatus(error)
+      // Only the route's own 404 means the record is gone; any other (the plugin off, an older backend
+      // without the route) would fail the same way for every row.
+      if (status === 404 && /no such pending write/i.test(errorText(error))) tally.gone++
+      else if (status === 404 || BULK_HALT.has(status)) return { ...tally, halted: describeFailure(error).text }
       else tally.failed++
     }
   }
@@ -646,14 +720,15 @@ const wasWere = n => (n === 1 ? 'was' : 'were')
 
 // The toast for a finished run. `done`: nothing selected is still pending, so select mode can end.
 function bulkSummary(total, tally) {
-  const { rejected, approved, gone, failed, halted } = tally
+  const { rejected, approved, gone, review, failed, halted } = tally
   const done = !halted && failed === 0
   if (done && rejected === total) return { done, toast: { kind: 'info', message: `Rejected ${writes(rejected)}.` } }
   const parts = [halted ? `${halted} Rejected ${rejected} of ${total} before stopping.` : `Rejected ${rejected} of ${total}.`]
   if (approved) parts.push(`${approved} ${wasWere(approved)} already approved elsewhere.`)
   if (gone) parts.push(`${gone} ${wasWere(gone)} no longer pending.`)
+  if (review) parts.push(`${review} now ${review === 1 ? 'needs' : 'need'} review; see the banner.`)
   if (failed) parts.push(`${failed} could not be rejected.`)
-  const warn = Boolean(halted) || failed > 0 || approved > 0
+  const warn = Boolean(halted) || failed > 0 || approved > 0 || review > 0
   return { done, toast: { kind: warn ? 'warning' : 'info', message: parts.join(' ') } }
 }
 
@@ -692,7 +767,7 @@ function BulkBar({ pageCount, checkedCount, allChecked, busy, decisionsOff, onSe
   })
 }
 
-function ScopedPane({ ctx, profile, activation }) {
+function ScopedPane({ ctx, profile, activation, connectionId }) {
   const [filter, setFilter] = useState('all')
   const [page, setPage] = useState(1)
   const [selected, setSelected] = useState(null)
@@ -700,17 +775,17 @@ function ScopedPane({ ctx, profile, activation }) {
   const [checked, setChecked] = useState([])
   const [bulkBusy, setBulkBusy] = useState(false)
   const bulkInFlight = useRef(false)
-  // Set when Done ends select mode: the bar holding focus unmounts, so focus goes to Select (or the pane).
+  // Set when Select or Done switches mode from a click: see the focus effect below.
   const refocusAfterSelect = useRef(false)
   // Where keyboard focus goes when the dialog closes: the row that opened it, or after a decision removed
   // that row, the row now in its place. `paneRef` is the fallback and tells whether this scope still shows.
   const paneRef = useRef(null)
   const opener = useRef(null)
-  const { list, failed, data } = usePendingList(ctx, { profile, activation }, filter, page)
+  const { list, failed, data } = usePendingList(ctx, { profile, activation, connectionId }, filter, page)
   const queryClient = useQueryClient()
   // After a decision every cached list page of this connection is out of date, not only the one shown
   // (the badge's, other filters', other pages').
-  const refreshLists = () => queryClient.invalidateQueries({ queryKey: [PLUGIN, 'pending', profile, activation] })
+  const refreshLists = () => queryClient.invalidateQueries({ queryKey: [PLUGIN, 'pending', profile, activation, connectionId] })
   const items = data?.items ?? []
   // A decision can empty the last page: show the page that is now last instead. Always step back at least one
   // page, so a reply whose `total` disagrees with its empty `items` cannot set the same page on every render.
@@ -720,13 +795,20 @@ function ScopedPane({ ctx, profile, activation }) {
   const pageKeys = items.map(itemKey)
   const visibleChecked = checked.filter(k => pageKeys.includes(k))
   const allChecked = pageKeys.length > 0 && visibleChecked.length === pageKeys.length
-  const sameConnection = () => host.state.profile.get() === profile && gatewayActivationEpoch() === activation
+  const sameConnection = () => isConnection({ profile, activation, connectionId })
+  // False once the pane unmounts (closed, or replaced on a switch): a bulk run stops at the next row.
+  const mounted = useRef(true)
+  useEffect(() => () => { mounted.current = false }, [])
 
+  // Entering or leaving select mode unmounts the button that had focus: move it to the bar's first button
+  // on the way in, and to Select (or the pane) on the way out.
   useEffect(() => {
-    if (selecting || !refocusAfterSelect.current) return
+    if (!refocusAfterSelect.current) return
     refocusAfterSelect.current = false
     const pane = paneRef.current
-    if (pane?.isConnected) (pane.querySelector('[data-wr-select]') || pane).focus()
+    if (!pane?.isConnected) return
+    const target = selecting ? pane.querySelector('[data-wr-bulk-bar] button:not([disabled])') : pane.querySelector('[data-wr-select]')
+    ;(target || pane).focus()
   }, [selecting])
 
   function exitSelecting() {
@@ -754,12 +836,12 @@ function ScopedPane({ ctx, profile, activation }) {
     paneRef.current?.focus()
     let tally = null
     try {
-      tally = await runBulkReject(ctx, targets, sameConnection)
+      tally = await runBulkReject(ctx, targets, data.scope, () => mounted.current && sameConnection())
     } finally {
       bulkInFlight.current = false
       if (sameConnection()) setBulkBusy(false)
     }
-    if (!tally || !sameConnection()) return
+    if (!tally || !mounted.current || !sameConnection()) return
     refreshLists()
     setChecked([])
     const { done, toast } = bulkSummary(targets.length, tally)
@@ -881,7 +963,7 @@ function ScopedPane({ ctx, profile, activation }) {
         })
         : null,
       data ? jsx(Gates, { gates: data.gates }) : null,
-      needsReview ? jsx(NeedsReviewBanner, { counts: needsReview, profile }) : null,
+      needsReview ? jsx(NeedsReviewBanner, { counts: needsReview, conn: { profile, activation, connectionId } }) : null,
       jsxs('div', {
         className: 'flex items-center gap-1',
         children: [
@@ -901,7 +983,7 @@ function ScopedPane({ ctx, profile, activation }) {
             ? jsx('button', {
               type: 'button',
               'data-wr-select': '',
-              onClick: () => { setSelected(null); setChecked([]); setSelecting(true) },
+              onClick: () => { refocusAfterSelect.current = true; setSelected(null); setChecked([]); setSelecting(true) },
               className: 'ml-auto rounded px-2 py-0.5 text-[0.6875rem]',
               style: { ...BORDER, ...MUTED },
               children: 'Select'
@@ -929,7 +1011,7 @@ function ScopedPane({ ctx, profile, activation }) {
       // a failed list poll (no data) leaves an open review alone instead of closing it mid-read or mid-decision.
       !selecting && selected && (!data || selected.scope === data.scope)
         ? jsx(ReviewDialog, {
-          ctx, profile, activation, selected, refreshList: refreshLists,
+          ctx, profile, activation, connectionId, selected, refreshList: refreshLists,
           onClose: () => setSelected(null),
           restoreFocus
         }, JSON.stringify([selected.scope, selected.kind, selected.id]))

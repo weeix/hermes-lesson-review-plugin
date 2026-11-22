@@ -16,15 +16,26 @@ export const STATUSBAR_AREAS = { right: 'statusBar.right' }
 export const host = {
   state: {
     profile: { get: () => globalThis.__WR_PROFILE__ },
+    connectionId: { get: () => globalThis.__WR_CONNECTION__ ?? 'local' },
     focusedSessionId: { get: () => globalThis.__WR_SESSION_ID__ ?? null },
-    focusedSessionProfile: { get: () => globalThis.__WR_SESSION_PROFILE__ ?? globalThis.__WR_PROFILE__ }
+    focusedSessionProfile: { get: () => globalThis.__WR_SESSION_PROFILE__ ?? globalThis.__WR_PROFILE__ },
+    // `__WR_SESSION_OWNER__`: an owner object, or null for unknown; unset = this connection and profile.
+    focusedSessionOwner: {
+      get: () => (globalThis.__WR_SESSION_OWNER__ !== undefined ? globalThis.__WR_SESSION_OWNER__
+        : { connectionId: globalThis.__WR_CONNECTION__ ?? 'local', profile: globalThis.__WR_SESSION_PROFILE__ ?? globalThis.__WR_PROFILE__ })
+    }
   },
   // The composer verbs record what they were asked; `__WR_DRAFT__` is the input's text, and
   // `__WR_SET_DRAFT_OK__ === false` makes setDraft report that no input answered.
   composer: {
     async getDraft(sessionId) {
       ;(globalThis.__WR_COMPOSER__ ||= []).push({ op: 'getDraft', sessionId })
+      globalThis.__WR_ON_GET_DRAFT__?.()
       return globalThis.__WR_DRAFT__ ?? ''
+    },
+    submit(sessionId, text) {
+      ;(globalThis.__WR_COMPOSER__ ||= []).push({ op: 'submit', sessionId, text })
+      return true
     },
     async setDraft(sessionId, text) {
       ;(globalThis.__WR_COMPOSER__ ||= []).push({ op: 'setDraft', sessionId, text })

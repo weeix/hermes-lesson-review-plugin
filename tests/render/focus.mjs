@@ -35,9 +35,13 @@ const applied = id => ({ id, subsystem: 'memory', status: 'applied' })
 // (apps/desktop/src/lib/query-client.ts), so react-query's default retries apply unless the plugin overrides them.
 // `sessionId`, `sessionProfile` and `draft` describe the focused chat for the composer stub (sdk-stub.mjs).
 async function mountPane({ decide = applied, items = ITEMS, listError = null, decisionsEnabled = true, previewOf = null,
-  needsReview = NO_REVIEW, sessionId = null, sessionProfile = undefined, draft = '', setDraftOk = true } = {}) {
+  needsReview = NO_REVIEW, sessionId = null, sessionProfile = undefined, sessionOwner = undefined, draft = '', setDraftOk = true,
+  withBadge = false } = {}) {
   globalThis.__WR_PROFILE__ = 'default'
   globalThis.__WR_ACTIVATION__ = 1
+  globalThis.__WR_CONNECTION__ = 'local'
+  globalThis.__WR_SESSION_OWNER__ = sessionOwner
+  globalThis.__WR_ON_GET_DRAFT__ = null
   globalThis.__WR_SESSION_ID__ = sessionId
   globalThis.__WR_SESSION_PROFILE__ = sessionProfile
   globalThis.__WR_DRAFT__ = draft
@@ -77,7 +81,9 @@ async function mountPane({ decide = applied, items = ITEMS, listError = null, de
   const host = document.createElement('div')
   document.body.appendChild(host)
   const root = createRoot(host)
-  const render = () => act(async () => { root.render(React.createElement(QueryClientProvider, { client }, pane.render())) })
+  const badge = contributions.find(c => c.id === 'badge')
+  const tree = () => (withBadge ? React.createElement(React.Fragment, null, pane.render(), badge.render()) : pane.render())
+  const render = () => act(async () => { root.render(React.createElement(QueryClientProvider, { client }, tree())) })
   await render()
   await settle()
   return { host, root, state, client, render }
@@ -266,7 +272,7 @@ const describe = el => (el === document.body ? 'body' : el ? `${el.tagName.toLow
   const s = await mountPane({ items: memoryItems(ids) })
   await clickEl(button('Next'))
   const emptyButTotal26 = { ...listOf(memoryItems(ids), 2), items: [] }
-  await act(async () => { s.client.setQueryData(['lesson-review', 'pending', 'default', 1, 'all', 2], emptyButTotal26) })
+  await act(async () => { s.client.setQueryData(['lesson-review', 'pending', 'default', 1, 'local', 'all', 2], emptyButTotal26) })
   await settle()
   check('empty page 2 whose total still says 26: back to page 1, no render loop',
     rows(s.host).length === 25 && rows(s.host)[0].getAttribute('data-wr-row') === `memory:${ids[0]}`, s.host.textContent.slice(0, 160))
@@ -327,7 +333,8 @@ for (const [name, error, reads, text] of [
   await settle()
   check('bulk reject: previewed and rejected both selected rows with their expect tokens',
     JSON.stringify(s.state.posts) === JSON.stringify(['/pending/memory/aaaa0001/reject', '/pending/memory/cccc0003/reject'])
-    && s.state.postBodies.every(b => Boolean(b?.expect?.review_id)))
+    && JSON.stringify(s.state.postBodies.map(b => b?.expect)) === JSON.stringify([preview('aaaa0001').expect, preview('cccc0003').expect]),
+  JSON.stringify(s.state.postBodies))
   check('bulk reject: exits select mode, leaves unselected row, and toasts',
     !s.host.querySelector('[data-wr-bulk-bar]') && rows(s.host).length === 1
     && rows(s.host)[0].getAttribute('data-wr-row') === 'memory:bbbb0002'
@@ -457,7 +464,8 @@ const cmd = (s, label) => s.host.querySelector(`[data-wr-cmd="${label}"]`)
   await clickEl(cmd(s, '/skills reject <id>'))
   check('/skills reject <id>: the placeholder is dropped, the space before the id kept',
     globalThis.__WR_COMPOSER__.find(c => c.op === 'setDraft')?.text === '/skills reject ', composerLog())
-  check('command chips: nothing is sent and no toast', globalThis.__WR_TOASTS__.length === 0 && s.state.posts.length === 0)
+  check('command chips: nothing is sent and no toast', globalThis.__WR_TOASTS__.length === 0 && s.state.posts.length === 0
+    && !globalThis.__WR_COMPOSER__.some(c => c.op === 'submit'))
   await act(async () => s.root.unmount())
 }
 const refusal = async (name, opts, pattern) => {
@@ -516,6 +524,103 @@ await refusal('text already in the input: kept, nothing written', { sessionId: '
   await act(async () => s.root.unmount())
   check('push: unmounting removes the listeners',
     listeners('plugin.lesson-review.pending.changed') === 0 && listeners('message.complete') === 0)
+}
+
+// ---- 16. bulk reject against core's reply shapes; the run stops on a switch, a foreign preview or a closed pane ----
+{
+  // Core answers a preview of a write that is no longer pending with 200 and no `expect`.
+  const settledPreview = (id, status, extra) => ({ ...preview(id), ...extra, status, expect: null, decisions_enabled: true })
+  const previews = {
+    aaaa0001: settledPreview('aaaa0001', 'already_resolved', { prior: 'applied' }),
+    bbbb0002: settledPreview('bbbb0002', 'already_resolved', { prior: 'rejected' }),
+    cccc0003: settledPreview('cccc0003', 'needs_review', { reason: 'stopped partway' })
+  }
+  const s = await mountPane({
+    items: memoryItems(['aaaa0001', 'bbbb0002', 'cccc0003', 'dddd0004', 'eeee0005']),
+    previewOf: id => previews[id] ?? { ...preview(id), decisions_enabled: true },
+    decide: id => (id === 'dddd0004' ? Promise.reject(httpError(409, '{"detail":"store refused"}')) : rejectReply(id, 'needs_review'))
+  })
+  await selectAllAndReject(s, 5)
+  check('settled previews: not posted; a 409 does not stop the run', JSON.stringify(s.state.posts)
+    === JSON.stringify(['/pending/memory/dddd0004/reject', '/pending/memory/eeee0005/reject']), JSON.stringify(s.state.posts))
+  check('settled previews: approved, rejected and needs review each counted as such', toasts().at(-1)?.message
+    === 'Rejected 1 of 5. 1 was already approved elsewhere. 2 now need review; see the banner. 1 could not be rejected.',
+  JSON.stringify(toasts().at(-1)))
+  await act(async () => s.root.unmount())
+}
+{
+  const s = await mountPane({ previewOf: () => Promise.reject(httpError(404, '{"detail":"Not Found"}')) })
+  await selectAllAndReject(s, 3)
+  check('a 404 other than "no such pending write" stops the run', s.state.previews.length === 1 && s.state.posts.length === 0
+    && toasts().at(-1)?.kind === 'warning' && /before stopping/.test(toasts().at(-1)?.message ?? ''), JSON.stringify(toasts().at(-1)))
+  await act(async () => s.root.unmount())
+}
+{
+  const foreign = id => ({ ...preview(id), decisions_enabled: true, expect: { ...preview(id).expect, profile: 'another-home' } })
+  const s = await mountPane({ previewOf: foreign })
+  await selectAllAndReject(s, 3)
+  check('a preview from another Hermes home: nothing rejected, the run stops', s.state.posts.length === 0
+    && s.state.previews.length === 1 && /^The list is out of date/.test(toasts().at(-1)?.message ?? ''), JSON.stringify(toasts().at(-1)))
+  await act(async () => s.root.unmount())
+}
+for (const [name, interrupt] of [
+  ['a connection switch', async () => { globalThis.__WR_CONNECTION__ = 'ssh-box' }],
+  ['the pane closing', async s => act(async () => s.root.unmount())]
+]) {
+  const reply = deferred()
+  const s = await mountPane({ decide: () => reply.promise })
+  await clickEl(button('Select'))
+  await clickEl(button('All on page'))
+  await clickEl(button('Reject (3)'))
+  await interrupt(s)
+  await act(async () => reply.resolve(rejectReply('aaaa0001', 'rejected')))
+  await settle()
+  check(`${name} mid-run: nothing more is read or rejected, no toast`, s.state.posts.length === 1 && s.state.previews.length === 1
+    && toasts().length === 0, `${s.state.previews.length} previews, ${s.state.posts.length} posts`)
+  if (s.host.isConnected && s.host.firstChild) await act(async () => s.root.unmount())
+}
+{
+  const s = await mountPane()
+  await act(async () => { button('Select').focus() })
+  await clickEl(button('Select'))
+  check('Select: focus moves into the bar', document.activeElement === button('All on page'), describe(document.activeElement))
+  await act(async () => s.root.unmount())
+}
+
+// ---- 17. composer commands: the chat must belong to this pane's connection and profile, before and after the draft read ----
+await refusal('chat on another connection: nothing written', { sessionId: 'sess-42', sessionOwner: { connectionId: 'ssh-box', profile: 'default' } },
+  /another Hermes connection/)
+await refusal('chat owner unknown: nothing written', { sessionId: 'sess-42', sessionOwner: null }, /can’t tell which profile/)
+{
+  const s = await mountPane({ needsReview: { memory: 1, skills: 0, total: 1 }, sessionId: 'sess-42' })
+  globalThis.__WR_ON_GET_DRAFT__ = () => { globalThis.__WR_SESSION_ID__ = 'sess-99' }
+  await clickEl(cmd(s, '/memory pending'))
+  check('focus moves to another chat while the draft is read: nothing written', !globalThis.__WR_COMPOSER__.some(c => c.op === 'setDraft')
+    && /changed/.test(globalThis.__WR_TOASTS__.at(-1)?.message ?? ''), composerLog())
+  await act(async () => s.root.unmount())
+}
+
+// ---- 18. push events with the badge mounted too, and steady traffic ----
+{
+  const listeners = type => globalThis.__WR_LISTENERS__.get(type)?.size || 0
+  const emit = type => act(async () => { for (const fn of [...(globalThis.__WR_LISTENERS__.get(type) || [])]) fn({ type, payload: {} }) })
+  const wait = ms => act(async () => { await new Promise(r => setTimeout(r, ms)) })
+  const s = await mountPane({ withBadge: true })
+  check('pane and badge: each listens', listeners('message.complete') === 2)
+  let before = s.state.listReads
+  for (let i = 0; i < 3; i++) await emit('message.complete')
+  await wait(400)
+  await settle()
+  check('pane and badge: a burst is still one read', s.state.listReads === before + 1, `${s.state.listReads - before} reads`)
+  // An event every 250 ms for 2.5 s: the settle timer keeps moving, the 2 s cap still refreshes inside the stream.
+  before = s.state.listReads
+  for (let i = 0; i < 10; i++) {
+    await emit('message.complete')
+    await wait(250)
+  }
+  const during = s.state.listReads - before
+  check('steady events: a refresh within 2 s, not only after they stop', during >= 1, `${during} reads during the stream`)
+  await act(async () => s.root.unmount())
 }
 
 finish()

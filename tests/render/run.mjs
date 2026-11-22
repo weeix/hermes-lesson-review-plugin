@@ -54,9 +54,10 @@ const live = {
 }
 const key = (...parts) => JSON.stringify(['lesson-review', ...parts])
 // The pane opens on the All filter, so only that list is read in these static renders.
-const listKey = key('pending', PROFILE, 1, 'all', 1)
-const batchKey = key('preview', PROFILE, 1, all.scope, 'skills', batch.id)
-const singleKey = key('preview', PROFILE, 1, all.scope, 'memory', memSingle.id)
+// Query keys: profile, gateway activation, connection id (the stub's host reports 'local'), then the rest.
+const listKey = key('pending', PROFILE, 1, 'local', 'all', 1)
+const batchKey = key('preview', PROFILE, 1, 'local', all.scope, 'skills', batch.id)
+const singleKey = key('preview', PROFILE, 1, 'local', all.scope, 'memory', memSingle.id)
 
 function okQueries() {
   return new Map([

@@ -41,7 +41,7 @@ async function mount(previews, postReply) {
   await act(async () => {
     root.render(React.createElement(QueryClientProvider, { client },
       React.createElement(ReviewDialog, {
-        ctx, profile: 'default', activation: 1, scope: 'default',
+        ctx, profile: 'default', activation: 1, connectionId: 'local', scope: 'default',
         selected: { kind: 'memory', id: 'f17e0001', scope: 'default' },
         refreshList() {}, onClose() { state.closed++ }
       })))

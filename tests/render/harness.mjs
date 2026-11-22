@@ -75,5 +75,5 @@ export const memoryPreview = (id, sha = id) => ({
   kind: 'memory', id, origin: 'foreground', action: 'add', status: 'ready', reason: null,
   decisions_enabled: true, summary: 'Memory add', is_batch: false, op_count: 1,
   ops: [{ index: 1, action: 'add', subject: 'user', fields: { content: `sample ${sha}` }, diff: null }],
-  expect: { review_kind: 'memory', review_id: id, record_sha256: sha }
+  expect: { review_kind: 'memory', review_id: id, record_sha256: sha, profile: 'default' }
 })
