@@ -136,3 +136,7 @@ PyYAML). The mounted tests only write under pytest's temp dir. Each scenario poi
 - The needs-review banner hasn't been seen in a native Desktop run yet.
 - Profile switching hasn't been tried in a real Desktop. Server-side profile scoping is covered by
   `tests/test_mounted.py`.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

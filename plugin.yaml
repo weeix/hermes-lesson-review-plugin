@@ -3,6 +3,7 @@ version: 0.1.0
 manifest_version: 2
 description: "Lesson review: a review pane for pending writes that write_approval stages for Hermes memory and skills; approve or reject each one."
 author: weeix
+license: MIT
 tags: [write-approval, pending-writes, memory, skills, review]
 # Unified package: this folder carries the desktop half (desktop/plugin.js) and the backend
 # (dashboard/plugin_api.py).
