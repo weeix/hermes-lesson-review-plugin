@@ -1,9 +1,5 @@
 """Adapters between the lesson-review routes and Hermes core.
 
-    list_pending(kind, page)      -> dict   (one page of items, per-kind counts, gates, needs_review)
-    get_preview(kind, pending_id) -> dict | None
-    decide(kind, pending_id, decision, expect) -> dict
-
 ``CoreAdapter`` is the production adapter. It calls the public ``tools.write_review_api`` service,
 which resolves the request's profile and owns the pending store (id format, link and file-type
 checks). ``FakeAdapter`` is the same adapter over fixture replies in core's shape, for development
@@ -157,7 +153,6 @@ def _fixture_writes(now: float) -> list[dict[str, Any]]:
 
 
 def select_adapter(name: str) -> CoreAdapter:
-    """Only the core service is a production adapter; fake is fixture data."""
     if name == "fake":
         return FakeAdapter()
     if name in ("", "core"):

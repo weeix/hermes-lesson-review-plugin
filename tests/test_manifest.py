@@ -1,9 +1,5 @@
-"""Naming contract: the server package and the desktop half show the same name.
-
-Desktop's Plugins page shows the agent row's manifest name (plugin.yaml ``name``) and, for a paired
-desktop half, the desktop plugin's ``name``. This plugin keeps all three equal so the two cards read
-as one package (see README "Names"). The desktop half's name is checked on the imported plugin object
-by tests/render/run.mjs. No Hermes checkout needed.
+"""Naming contract (README "Names"): plugin.yaml, dashboard/manifest.json and the desktop half share one
+name. The desktop half's name is checked on the imported plugin object by tests/render/run.mjs.
 """
 
 from __future__ import annotations

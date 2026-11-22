@@ -1,15 +1,8 @@
 """Mounted HTTP tests: the plugin's routes served by Hermes' own web app (hermes_cli.web_server.app).
 
 Unlike test_routes.py (a bare router), these go through Hermes' middleware: the session-token auth
-gate, the plugin enable gate, and the ``?profile=`` scope. They need a hermes-agent checkout and an
-interpreter that can import it:
-
-    HERMES_SRC=/path/to/hermes-agent HERMES_PYTHON=/path/to/hermes/python .venv/bin/python -m pytest -q \
-        tests/test_mounted.py
-
-HERMES_PYTHON defaults to the running interpreter. Each scenario runs tests/mounted_probe.py in a fresh
-process whose HOME and HERMES_HOME are a throwaway tree under pytest's temp dir (TMPDIR). The real
-~/.hermes is never used: the probe pins both.
+gate, the plugin enable gate, and the ``?profile=`` scope (see README "Running the checks"). Each
+scenario runs tests/mounted_probe.py in a fresh process.
 """
 
 from __future__ import annotations

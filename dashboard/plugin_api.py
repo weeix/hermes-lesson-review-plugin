@@ -1,16 +1,5 @@
 """Backend routes for the lesson-review plugin, mounted at /api/plugins/lesson-review/.
 
-Read routes:
-  GET  /pending?kind=all|memory|skills&page=N   -> page of pending writes + counts + gate states
-  GET  /pending/{kind}/{pending_id}              -> one record, sanitized, with per-op diffs
-
-Decision route (on unless the profile turned it off; see ``_decisions_enabled``):
-  POST /pending/{kind}/{pending_id}/{approve|reject} -> resolver outcome, or 501 if disabled
-
-Input is checked here, before the adapter is called: ``kind`` must be a known kind and
-``pending_id`` must be a minted id (8 lowercase hex characters, core's format). Bad input is 400.
-A pending store core cannot read (for example, a link) is 409.
-
 Auth and profile scoping are done by Hermes before this code runs (dashboard auth gate, then the
 ``?profile=`` / native-grant scope). Core's service reads the profile the request is scoped to.
 """
@@ -65,11 +54,8 @@ def _mapping(value: Any) -> Mapping:
 def _decisions_enabled() -> bool:
     """Whether approve/reject are allowed for the profile this request is scoped to.
 
-    Only the core adapter decides. ``LESSON_REVIEW_ALLOW_DECISIONS=0|false|no|off`` turns decisions off
-    for every profile; no environment variable is needed to turn them on. Otherwise the profile's
-    ``plugins.entries.lesson-review.settings.allow_decisions`` decides (then the legacy ``config``
-    subtree, as ``ctx.get_config`` reads it), default true. Only a boolean ``true`` enables, and a
-    config that cannot be read disables. Never inferred from a client request or a staging flag.
+    The legacy ``config`` subtree is read after ``settings``, as ``ctx.get_config`` reads it. Never
+    inferred from a client request or a staging flag.
     """
     if ADAPTER.name != "core":
         return False

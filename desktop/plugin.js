@@ -2,9 +2,8 @@
 //
 // Lists staged memory/skill writes from the backend (/api/plugins/lesson-review/pending) in a pane and
 // paints a count badge in the status bar. Selecting a row opens a review dialog for that one record:
-// the exact proposal, per-op diffs, and Approve / Reject. The host enables decisions only for the
-// acceptance kit. Writes whose approval stopped partway are not listed; a banner gives their count and
-// says which slash command closes them.
+// the exact proposal, per-op diffs, and Approve / Reject. Writes whose approval stopped partway are not
+// listed; a banner gives their count and says which slash command closes them.
 //
 // Only @hermes/plugin-sdk, react and react/jsx-runtime may be imported; this file is not compiled,
 // so it uses jsx()/jsxs() instead of JSX syntax.
@@ -162,7 +161,6 @@ function OpView({ op }) {
 // Approve / Reject: real `disabled` attribute, visibly dimmed, not-allowed cursor. The wrapper span owns the
 // title and the cursor (see ReviewFooter): a disabled button has pointer-events: none, so its own title never shows.
 const DECISION_TITLE = 'Decisions are turned off for this profile (read-only).'
-// A usable Approve is the primary action; Reject, and any disabled button, keep the neutral variant.
 function decisionButton(label, reason, onClick) {
   return jsx('span', {
     title: reason || undefined,
@@ -177,7 +175,7 @@ function decisionButton(label, reason, onClick) {
   })
 }
 
-// ---- decisions: plain functions, so the render checks can call them without a renderer ----
+// Plain functions, so the render checks can call them without a renderer.
 
 // Why Approve / Reject cannot be used now, as a tooltip string ('' = usable). The gate and the in-flight
 // decision apply to both buttons; Approve also needs the preview itself to be `ready`.
@@ -240,8 +238,6 @@ function decisionOutcome(kind, result, error) {
     notice: { tone: 'error', text: 'Hermes sent an answer this plugin does not recognise. Preview again to see the record.' }
   }
 }
-
-// ---- review dialog ----
 
 const IDLE = { busy: false, notice: null, settled: false, stale: false, refreshing: false }
 
@@ -439,8 +435,6 @@ function ReviewDialog({ ctx, profile, activation, selected, refreshList, onClose
   })
 }
 
-// ---- needs-review banner ----
-
 const CODE = { ...MONO, fontSize: '0.75rem' }
 function commands(verb, kinds) {
   return kinds.flatMap((kind, i) => [
@@ -484,8 +478,6 @@ function NeedsReviewBanner({ counts }) {
     ]
   })
 }
-
-// ---- pane ----
 
 // The profile and gateway activation every query is keyed by; a change of either is a new connection.
 function useConnection() {
@@ -644,7 +636,7 @@ function ScopedPane({ ctx, profile, activation }) {
   })
 }
 
-// Core answers one page at a time (25 rows); `total` counts every page.
+// Core answers one page at a time; `total` counts every page.
 function Pager({ data, setPage }) {
   const first = (data.page - 1) * data.page_size + 1
   const last = first + data.items.length - 1
@@ -671,9 +663,7 @@ function PendingBadge({ ctx }) {
 
 export default {
   id: PLUGIN,
-  // Same name as the server package (plugin.yaml `name`, dashboard/manifest.json `name`). Desktop's
-  // Plugins page shows this name on the desktop card and, when the two halves pair, on the joined card;
-  // the server half can only display its manifest name. tests/render/run.mjs checks it against plugin.yaml.
+  // Same name as the server package (plugin.yaml `name`, dashboard/manifest.json `name`); see README "Names".
   name: PLUGIN,
   // Opt-in: inventories in Capabilities > Plugins and stays off until the user turns it on.
   defaultEnabled: false,
