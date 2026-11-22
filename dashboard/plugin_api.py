@@ -42,6 +42,8 @@ _adapter_mod = _load_adapter_module()
 ADAPTER = _adapter_mod.select_adapter(os.environ.get("LESSON_REVIEW_ADAPTER", "core").strip().lower())
 DECISIONS = ("approve", "reject")
 PLUGIN_ID = "lesson-review"
+# desktop/plugin.js listens for plugin.lesson-review.pending.changed (PUSH_EVENTS).
+PENDING_CHANGED_EVENT = "pending.changed"
 _OFF_VALUES = frozenset({"0", "false", "no", "off"})
 
 router = APIRouter()
@@ -129,4 +131,23 @@ def decide_pending(kind: str, pending_id: str, decision: str, body: dict | None 
     if not isinstance(expect, dict):
         raise HTTPException(status_code=400, detail="Preview this write first and send its expect value.")
     with _adapter_errors():
-        return ADAPTER.decide(kind, pending_id, decision, expect)
+        outcome = ADAPTER.decide(kind, pending_id, decision, expect)
+    if isinstance(outcome, Mapping) and outcome.get("status") in ("applied", "rejected", "needs_review"):
+        _emit_pending_changed(kind, outcome.get("status", ""))
+    return outcome
+
+
+def _emit_pending_changed(kind: str, status: str) -> None:
+    """Notify connected Desktop windows to invalidate their pending-writes queries immediately.
+
+    Carries only subsystem ``kind`` and outcome ``status`` — never proposal text, ids, or expect
+    tokens — since ``broadcast_plugin_event`` reaches every window on the gateway process.
+    """
+    try:
+        from hermes_cli.plugin_events import broadcast_plugin_event
+    except ImportError:
+        return
+    try:
+        broadcast_plugin_event(PLUGIN_ID, PENDING_CHANGED_EVENT, {"kind": kind, "status": status})
+    except Exception:
+        return

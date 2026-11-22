@@ -34,6 +34,17 @@ export const host = {
       ;(globalThis.__WR_COMPOSER__ ||= []).push({ op: 'focus', sessionId })
     }
   },
+  paneVisibility() {
+    return { get: () => globalThis.__WR_PANE_VISIBLE__ ?? true }
+  },
+  // Listeners by event type in `__WR_LISTENERS__`, so a test can emit gateway events.
+  onEvent(type, handler) {
+    const map = (globalThis.__WR_LISTENERS__ ||= new Map())
+    let set = map.get(type)
+    if (!set) { set = new Set(); map.set(type, set) }
+    set.add(handler)
+    return () => set.delete(handler)
+  },
   notify(input) {
     ;(globalThis.__WR_TOASTS__ ||= []).push(input)
   }

@@ -12,7 +12,17 @@ import { useEffect, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const PLUGIN = 'lesson-review'
-const POLL_MS = 10000
+const PANE_ID = `${PLUGIN}:pane`
+// Lists refresh on gateway events (`PUSH_EVENTS`): a decision in any window (dashboard/plugin_api.py emits
+// `pending.changed`) and the end of an agent turn, which is when a turn's writes have been staged. Polling
+// is the fallback for what sends no event (a slash command, the CLI, another process): 30 s while the
+// pane shows, 60 s while it doesn't.
+const VISIBLE_POLL_MS = 30000
+const HIDDEN_POLL_MS = 60000
+const PUSH_EVENTS = [`plugin.${PLUGIN}.pending.changed`, 'message.complete']
+// Events come in bursts (a bulk reject sends one per write; the pane and the badge both listen): the lists
+// of one connection refresh once, this long after the last event.
+const PUSH_SETTLE_MS = 300
 const FILTERS = [
   { id: 'all', label: 'All' },
   { id: 'memory', label: 'Memory' },
@@ -535,13 +545,46 @@ function useConnection() {
   return { profile: useValue(host.state.profile), activation: useGatewayActivationEpoch() }
 }
 
+function usePaneVisible() {
+  const atom = typeof host.paneVisibility === 'function' ? host.paneVisibility(PANE_ID) : null
+  return atom ? Boolean(useValue(atom)) : true
+}
+
+// One timer per connection, shared by every listener, so a burst of events refreshes the lists once.
+const pushTimers = new Map()
+
+// Refreshes this connection's cached pending lists on the `PUSH_EVENTS`. Subscribes with `host.onEvent`, not
+// `ctx.onEvent`: the effect's cleanup disposes it, and `ctx.onEvent` would also keep every disposer until the
+// plugin unloads, one per pane or badge mount.
+function usePendingPushSync({ profile, activation }) {
+  const queryClient = useQueryClient()
+  useEffect(() => {
+    if (typeof host.onEvent !== 'function') return undefined
+    const key = JSON.stringify([profile, activation])
+    const refresh = () => {
+      pushTimers.delete(key)
+      if (host.state.profile.get() === profile && gatewayActivationEpoch() === activation) {
+        queryClient.invalidateQueries({ queryKey: [PLUGIN, 'pending', profile, activation] })
+      }
+    }
+    const onPush = () => {
+      clearTimeout(pushTimers.get(key))
+      pushTimers.set(key, setTimeout(refresh, PUSH_SETTLE_MS))
+    }
+    const offs = PUSH_EVENTS.map(event => host.onEvent(event, onPush)).filter(off => typeof off === 'function')
+    return () => { for (const off of offs) off() }
+  }, [queryClient, profile, activation])
+}
+
 // The pending list for one filter. A failed read shows nothing from an earlier read: react-query keeps
 // the last good data on error, and showing those counts as current would be wrong.
 function usePendingList(ctx, { profile, activation }, filter, page = 1) {
+  const paneVisible = usePaneVisible()
+  usePendingPushSync({ profile, activation })
   const list = useQuery({
     queryKey: [PLUGIN, 'pending', profile, activation, filter, page],
     queryFn: () => ctx.rest(`/pending?kind=${filter}&page=${page}`),
-    refetchInterval: POLL_MS,
+    refetchInterval: paneVisible ? VISIBLE_POLL_MS : HIDDEN_POLL_MS,
     retry: retryOnce
   })
   const failed = list.isError ? describeFailure(list.error) : null

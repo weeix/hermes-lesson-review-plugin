@@ -204,3 +204,25 @@ def test_bad_input_never_reaches_the_adapter(monkeypatch):
     assert client.get(f"{PREFIX}/pending/memory/0123ABCD").status_code == 400
     assert client.post(f"{PREFIX}/pending/memory/0123ABCD/approve", json={"expect": {}}).status_code == 400
     assert client.post(f"{PREFIX}/pending/nope/0123abcd/reject", json={"expect": {}}).status_code == 400
+
+
+def test_decide_broadcasts_pending_changed_only_when_queue_changes(monkeypatch):
+    events = []
+    hermes_cli = types.ModuleType("hermes_cli")
+    plugin_events = types.ModuleType("hermes_cli.plugin_events")
+    plugin_events.broadcast_plugin_event = lambda pid, ev, payload=None: events.append((pid, ev, payload))
+    hermes_cli.plugin_events = plugin_events
+
+    client, probe = _core_client(monkeypatch, {})
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugin_events", plugin_events)
+    sys.modules["hermes_cli"].plugin_events = plugin_events
+
+    r1 = client.post(f"{PREFIX}/pending/memory/0a1d0001/reject", json={"expect": {"profile": "p"}})
+    assert r1.status_code == 200
+    assert events == [("lesson-review", "pending.changed", {"kind": "memory", "status": "rejected"})]
+
+    # A conflict outcome did not alter the queue, so no broadcast storm is emitted.
+    probe.decide = lambda kind, pid, decision, expect: {"status": "conflict", "reason": "stale"}
+    r2 = client.post(f"{PREFIX}/pending/skills/5c1e0001/approve", json={"expect": {"profile": "p"}})
+    assert r2.status_code == 200 and r2.json()["status"] == "conflict"
+    assert len(events) == 1

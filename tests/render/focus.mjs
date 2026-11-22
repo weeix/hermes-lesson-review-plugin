@@ -43,6 +43,7 @@ async function mountPane({ decide = applied, items = ITEMS, listError = null, de
   globalThis.__WR_DRAFT__ = draft
   globalThis.__WR_SET_DRAFT_OK__ = setDraftOk
   globalThis.__WR_COMPOSER__ = []
+  globalThis.__WR_LISTENERS__ = new Map()
   globalThis.__WR_TOASTS__ = []
   const state = { items: [...items], posts: [], postBodies: [], previews: [], listReads: 0, listError, scope: 'default', listPaths: [] }
   const ctx = {
@@ -476,6 +477,45 @@ await refusal('text already in the input: kept, nothing written', { sessionId: '
   check('no input answered: a toast, no focus', !globalThis.__WR_COMPOSER__.some(c => c.op === 'focus')
     && /Could not reach the chat input/.test(globalThis.__WR_TOASTS__.at(-1)?.message ?? ''), composerLog())
   await act(async () => s.root.unmount())
+}
+
+// ---- 15. push events: a decision anywhere or a finished turn refreshes the list; a burst refreshes it once ----
+{
+  const listeners = type => globalThis.__WR_LISTENERS__.get(type)?.size || 0
+  const emit = (type, payload = {}) => act(async () => {
+    for (const fn of [...(globalThis.__WR_LISTENERS__.get(type) || [])]) fn({ type, payload })
+  })
+  // The refresh waits PUSH_SETTLE_MS (300 ms) after the last event.
+  const afterSettle = async () => {
+    await act(async () => { await new Promise(r => setTimeout(r, 400)) })
+    await settle()
+  }
+  const s = await mountPane()
+  check('push: listening for pending.changed and message.complete',
+    listeners('plugin.lesson-review.pending.changed') === 1 && listeners('message.complete') === 1)
+
+  // A write staged by a turn, with no UI action: message.complete brings it in.
+  const before = s.state.listReads
+  s.state.items = [...s.state.items, ...memoryItems(['dddd0004'])]
+  await emit('message.complete')
+  check('push: nothing is read before the events settle', s.state.listReads === before)
+  await afterSettle()
+  check('push (message.complete): the list is read again and shows the new write',
+    s.state.listReads === before + 1 && rows(s.host).length === 4 && Boolean(s.host.querySelector('[data-wr-row="memory:dddd0004"]')),
+  `${s.state.listReads - before} reads`)
+
+  // Five writes decided in another window: one read, not five.
+  const beforeBurst = s.state.listReads
+  s.state.items = s.state.items.filter(i => !['aaaa0001', 'bbbb0002'].includes(i.id))
+  for (let i = 0; i < 5; i++) await emit('plugin.lesson-review.pending.changed', { kind: 'memory', status: 'rejected' })
+  await afterSettle()
+  check('push (pending.changed burst): one read, and the resolved writes are gone',
+    s.state.listReads === beforeBurst + 1 && rows(s.host).length === 2 && !s.host.querySelector('[data-wr-row="memory:aaaa0001"]'),
+  `${s.state.listReads - beforeBurst} reads`)
+
+  await act(async () => s.root.unmount())
+  check('push: unmounting removes the listeners',
+    listeners('plugin.lesson-review.pending.changed') === 0 && listeners('message.complete') === 0)
 }
 
 finish()
