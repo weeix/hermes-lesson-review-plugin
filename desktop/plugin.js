@@ -472,13 +472,19 @@ function ReviewDialog({ ctx, profile, activation, connectionId, selected, refres
 
 const CODE = { ...MONO, fontSize: '0.75rem' }
 
+// The composer address of the focused chat: its runtime id, else its stored id (a chat that is shown but not
+// resumed), else `'new'`, the SDK's address for a new chat's input before its first message gives it an id.
+function focusedChatAddress() {
+  return host.state?.focusedSessionId?.get?.() || host.state?.focusedStoredSessionId?.get?.() || 'new'
+}
+
 // Why the focused chat is not one this pane's commands may go to, or '' when it is. The command acts on
 // whichever profile and Hermes the chat belongs to, so the chat must have this pane's owner: the same
 // connection and profile (`focusedSessionOwner`; null when the owner is unknown or ambiguous, which is
-// refused). A Desktop without `focusedSessionOwner` can only compare profile names.
+// refused; for a new chat, the active gateway's, where its first message will start it). A Desktop without
+// `focusedSessionOwner` can only compare profile names.
 function chatMismatch({ profile, connectionId }) {
-  const sessionId = host.state?.focusedSessionId?.get?.() ?? null
-  if (!sessionId) return { sessionId, reason: 'none' }
+  const sessionId = focusedChatAddress()
   const paneProfile = (profile || '').trim() || 'default'
   const ownerAtom = host.state?.focusedSessionOwner
   if (typeof ownerAtom?.get === 'function') {
@@ -495,8 +501,8 @@ function chatMismatch({ profile, connectionId }) {
 }
 
 // Puts a slash command in the focused chat's input and the caret after it, for the user to finish (`<id>`)
-// and send; never sends it. Refuses, with a toast, instead of writing somewhere wrong: no chat focused, a
-// chat that belongs to another profile or Hermes than this pane (see chatMismatch), or text already in the
+// and send; never sends it. A new chat with no message yet counts. Refuses, with a toast, instead of writing
+// somewhere wrong: no chat input on screen, a chat that belongs to another profile or Hermes than this pane (see chatMismatch), or text already in the
 // input (the composer's own prefix insert would turn that text into the command's argument). The chat is
 // checked again after reading its draft, since focus can move while that is answered.
 async function stageCommandInComposer(command, conn) {
@@ -504,7 +510,7 @@ async function stageCommandInComposer(command, conn) {
   const composer = host.composer
   const paneProfile = (conn.profile || '').trim() || 'default'
   const refusal = ({ reason, other }) => ({
-    none: `Open a chat first, then click ${command} again.`,
+    none: `This Desktop can’t write to the chat input. Type ${command} in the chat yourself.`,
     unknown: `Hermes can’t tell which profile the open chat belongs to. Open a chat in ${paneProfile}, then click ${command} again.`,
     profile: `The open chat belongs to profile ${other || 'default'}, not ${paneProfile}. Open a chat in ${paneProfile} first.`,
     connection: `The open chat is on another Hermes connection than this pane. Open a chat on this one first.`

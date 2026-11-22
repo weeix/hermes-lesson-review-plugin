@@ -20,6 +20,7 @@ export const host = {
     profile: { get: () => globalThis.__WR_PROFILE__ },
     connectionId: { get: () => globalThis.__WR_CONNECTION__ ?? 'local' },
     focusedSessionId: { get: () => globalThis.__WR_SESSION_ID__ ?? null },
+    focusedStoredSessionId: { get: () => globalThis.__WR_STORED_SESSION_ID__ ?? null },
     focusedSessionProfile: { get: () => globalThis.__WR_SESSION_PROFILE__ ?? globalThis.__WR_PROFILE__ },
     // `__WR_SESSION_OWNER__`: an owner object, or null for unknown; unset = this connection and profile.
     focusedSessionOwner: {

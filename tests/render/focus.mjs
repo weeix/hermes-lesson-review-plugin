@@ -35,7 +35,7 @@ const applied = id => ({ id, subsystem: 'memory', status: 'applied' })
 // (apps/desktop/src/lib/query-client.ts), so react-query's default retries apply unless the plugin overrides them.
 // `sessionId`, `sessionProfile` and `draft` describe the focused chat for the composer stub (sdk-stub.mjs).
 async function mountPane({ decide = applied, items = ITEMS, listError = null, decisionsEnabled = true, previewOf = null,
-  needsReview = NO_REVIEW, sessionId = null, sessionProfile = undefined, sessionOwner = undefined, draft = '', setDraftOk = true,
+  needsReview = NO_REVIEW, sessionId = null, storedSessionId = null, sessionProfile = undefined, sessionOwner = undefined, draft = '', setDraftOk = true,
   withBadge = false } = {}) {
   globalThis.__WR_PROFILE__ = 'default'
   globalThis.__WR_ACTIVATION__ = 1
@@ -43,6 +43,7 @@ async function mountPane({ decide = applied, items = ITEMS, listError = null, de
   globalThis.__WR_SESSION_OWNER__ = sessionOwner
   globalThis.__WR_ON_GET_DRAFT__ = null
   globalThis.__WR_SESSION_ID__ = sessionId
+  globalThis.__WR_STORED_SESSION_ID__ = storedSessionId
   globalThis.__WR_SESSION_PROFILE__ = sessionProfile
   globalThis.__WR_DRAFT__ = draft
   globalThis.__WR_SET_DRAFT_OK__ = setDraftOk
@@ -477,7 +478,31 @@ const refusal = async (name, opts, pattern) => {
     && toast?.kind === 'warning' && pattern.test(toast.message), `${composerLog()} ${JSON.stringify(toast)}`)
   await act(async () => s.root.unmount())
 }
-await refusal('no chat focused: nothing written, a toast says to open one', { sessionId: null }, /Open a chat first/)
+// A new chat has no session id until its first message: the command goes to the SDK's `'new'` address.
+{
+  const s = await mountPane({ needsReview: { memory: 1, skills: 0, total: 1 } })
+  await clickEl(cmd(s, '/memory pending'))
+  check('new chat, no message yet: written to its input, then focused', composerLog() === JSON.stringify([
+    { op: 'getDraft', sessionId: 'new' }, { op: 'setDraft', sessionId: 'new', text: '/memory pending' },
+    { op: 'focus', sessionId: 'new' }]) && globalThis.__WR_TOASTS__.length === 0, composerLog())
+  await act(async () => s.root.unmount())
+}
+{
+  const s = await mountPane({ needsReview: { memory: 1, skills: 0, total: 1 }, storedSessionId: 'stored-7' })
+  await clickEl(cmd(s, '/memory pending'))
+  check('a chat shown but not resumed: addressed by its stored id',
+    globalThis.__WR_COMPOSER__.find(c => c.op === 'setDraft')?.sessionId === 'stored-7', composerLog())
+  await act(async () => s.root.unmount())
+}
+{
+  const s = await mountPane({ needsReview: { memory: 1, skills: 0, total: 1 }, setDraftOk: false })
+  await clickEl(cmd(s, '/memory pending'))
+  check('no chat input on screen: a toast, no focus', !globalThis.__WR_COMPOSER__.some(c => c.op === 'focus')
+    && /Could not reach the chat input/.test(globalThis.__WR_TOASTS__.at(-1)?.message ?? ''), composerLog())
+  await act(async () => s.root.unmount())
+}
+await refusal('new chat on another profile: nothing written', { sessionOwner: { connectionId: 'local', profile: 'work' } },
+  /belongs to profile work/)
 await refusal('chat in another profile: nothing written', { sessionId: 'sess-42', sessionProfile: 'work' }, /belongs to profile work/)
 await refusal('text already in the input: kept, nothing written', { sessionId: 'sess-42', draft: 'half a message' }, /already has text/)
 {
@@ -597,6 +622,14 @@ await refusal('chat owner unknown: nothing written', { sessionId: 'sess-42', ses
   globalThis.__WR_ON_GET_DRAFT__ = () => { globalThis.__WR_SESSION_ID__ = 'sess-99' }
   await clickEl(cmd(s, '/memory pending'))
   check('focus moves to another chat while the draft is read: nothing written', !globalThis.__WR_COMPOSER__.some(c => c.op === 'setDraft')
+    && /changed/.test(globalThis.__WR_TOASTS__.at(-1)?.message ?? ''), composerLog())
+  await act(async () => s.root.unmount())
+}
+{
+  const s = await mountPane({ needsReview: { memory: 1, skills: 0, total: 1 } })
+  globalThis.__WR_ON_GET_DRAFT__ = () => { globalThis.__WR_SESSION_ID__ = 'sess-99' }
+  await clickEl(cmd(s, '/memory pending'))
+  check('a new chat gets its id while the draft is read: nothing written', !globalThis.__WR_COMPOSER__.some(c => c.op === 'setDraft')
     && /changed/.test(globalThis.__WR_TOASTS__.at(-1)?.message ?? ''), composerLog())
   await act(async () => s.root.unmount())
 }
