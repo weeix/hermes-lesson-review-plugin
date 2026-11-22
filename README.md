@@ -7,6 +7,8 @@ each operation, then approve or reject it.
 
 The list shows metadata only. Full content appears only in the review dialog.
 
+![The Lesson review pane in Hermes Desktop: pending memory and skill writes, with a banner for one write whose approval stopped partway](docs/screenshots/pane.png)
+
 ## Requirements
 
 - Hermes Agent with the `tools.write_review_api` service
