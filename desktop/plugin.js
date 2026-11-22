@@ -1,0 +1,695 @@
+// Lesson review: desktop half of the lesson-review plugin.
+//
+// Lists staged memory/skill writes from the backend (/api/plugins/lesson-review/pending) in a pane and
+// paints a count badge in the status bar. Selecting a row opens a review dialog for that one record:
+// the exact proposal, per-op diffs, and Approve / Reject. The host enables decisions only for the
+// acceptance kit. Writes whose approval stopped partway are not listed; a banner gives their count and
+// says which slash command closes them.
+//
+// Only @hermes/plugin-sdk, react and react/jsx-runtime may be imported; this file is not compiled,
+// so it uses jsx()/jsxs() instead of JSX syntax.
+import { Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, PANES_AREA, STATUSBAR_AREAS, gatewayActivationEpoch, host, useGatewayActivationEpoch, useQuery, useQueryClient, useValue } from '@hermes/plugin-sdk'
+import { useRef, useState } from 'react'
+import { jsx, jsxs } from 'react/jsx-runtime'
+
+const PLUGIN = 'lesson-review'
+const POLL_MS = 10000
+const FILTERS = [
+  { id: 'all', label: 'All' },
+  { id: 'memory', label: 'Memory' },
+  { id: 'skills', label: 'Skills' }
+]
+const MUTED = { color: 'var(--ui-text-tertiary)' }
+const BORDER = { border: '1px solid var(--ui-stroke-secondary)' }
+const RULE = { borderTop: '1px solid var(--ui-stroke-secondary)' }
+const MONO = { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }
+const CHIP = 'inline-flex items-center rounded px-1.5 py-px text-[0.6875rem] leading-4'
+// Sized inline: DialogContent's own default is max-w-lg, and the plugin cannot rely on host classes it
+// did not compile itself. The body box of DialogContent scrolls; the footer is pinned below it.
+const DIALOG_SIZE = { width: 'min(860px, calc(100vw - 2rem))', maxWidth: 'calc(100vw - 2rem)', maxHeight: '80vh' }
+
+function ago(ts) {
+  if (!ts) return ''
+  const s = Math.max(0, Math.round(Date.now() / 1000 - ts))
+  if (s < 90) return `${s}s ago`
+  if (s < 5400) return `${Math.round(s / 60)}m ago`
+  if (s < 129600) return `${Math.round(s / 3600)}h ago`
+  return `${Math.round(s / 86400)}d ago`
+}
+
+function errorText(error) {
+  return error instanceof Error ? error.message : String(error ?? 'unknown error')
+}
+
+// HTTP status of a failed call. The desktop bridge throws `Error("<status>: <body>")` with a numeric
+// `statusCode` (apps/desktop/electron/api-transport.ts), but Electron's IPC passes only the message on,
+// wrapped: "Error invoking remote method 'hermes:api': Error: 409: …". The pattern matches both forms,
+// as the host's own checks do (apps/desktop/src/lib/gateway-rpc.ts).
+function httpStatus(error) {
+  const code = Number(error?.statusCode)
+  if (Number.isInteger(code) && code > 0) return code
+  const match = /(?:^\s*|error:\s*)(\d{3})(?::|\s|$)/i.exec(errorText(error))
+  return match ? Number(match[1]) : null
+}
+
+// Desktop's query client keeps react-query's default of three retries (1 s, 2 s, 4 s apart). A 4xx answer
+// (plugin off, session refused, store refused) will not change on retry, and retrying it hid the message
+// behind "Loading…" for seconds. Retry only what may pass: one more try after a 5xx or a network error.
+function retryOnce(failureCount, error) {
+  const status = httpStatus(error)
+  return failureCount < 1 && (status === null || status >= 500)
+}
+
+const OFF_TEXT = 'Lesson review is turned off on this Hermes. Turn it on in Capabilities → Plugins.'
+
+// What a failed read means, in words a user can act on. `detail` is the raw text, for a tooltip only;
+// `gone`: a 404 other than the plugin being off (for a preview, the record is gone).
+function describeFailure(error) {
+  const status = httpStatus(error)
+  const detail = errorText(error)
+  if (status === 404 && /Plugin not found/i.test(detail)) return { text: OFF_TEXT, detail }
+  if (status === 404) return { text: 'Lesson review is not available on this Hermes (HTTP 404).', detail, gone: true }
+  if (status === 503 && /Write Review API/i.test(detail)) return { text: 'Update Hermes to use Lesson review.', detail }
+  // The profile turned decisions off after this preview was loaded.
+  if (status === 501 && /disabled/i.test(detail)) return { text: DECISION_TITLE, detail }
+  if (status === 409) return { text: 'Hermes could not access this profile’s pending store.', detail }
+  if (status === 401 || status === 403) {
+    return { text: `Hermes refused this session (HTTP ${status}). Reconnect, then Retry.`, detail }
+  }
+  if (status === null || status >= 500) return { text: 'Could not reach Hermes.', detail }
+  return { text: `Hermes could not answer (HTTP ${status}).`, detail }
+}
+
+function Chip({ children, title }) {
+  return jsx('span', { className: CHIP, style: { ...BORDER, ...MUTED }, title, children })
+}
+
+function Gates({ gates }) {
+  const parts = Object.entries(gates).map(([kind, g]) => `${kind} ${g.write_approval ? 'on' : 'off'}`)
+  return jsx('div', { className: 'text-[0.6875rem]', style: MUTED, children: `write_approval: ${parts.join(' · ')}` })
+}
+
+// A labelled, scrolling monospace box: one op field, or its diff. Lines pad themselves (px-1.5), so a
+// diff line's colour runs to the box edge.
+function LabelledPre({ name, lines }) {
+  return jsxs('div', {
+    className: 'flex flex-col gap-0.5',
+    children: [
+      jsx('div', { className: 'text-[0.6875rem]', style: MUTED, children: name }),
+      jsx('pre', {
+        className: 'whitespace-pre-wrap break-words rounded py-1.5 text-[0.75rem]',
+        style: { ...MONO, ...BORDER, margin: 0, maxHeight: '11rem', overflow: 'auto' },
+        children: lines
+      })
+    ]
+  })
+}
+
+function Field({ name, value }) {
+  return jsx(LabelledPre, { name, lines: jsx('div', { className: 'px-1.5', children: String(value) }) })
+}
+
+// Unified diff lines in the host's diff colours (apps/desktop styles.css `--ui-diff-*`, which follow the
+// theme, dark included); the fallbacks are its light values. The +/- prefix stays, so colour is not the only cue.
+const DIFF_LINE = {
+  add: { background: 'var(--ui-diff-add-background, rgba(31, 138, 101, 0.12))', color: 'var(--ui-diff-add-foreground, #165f46)' },
+  remove: { background: 'var(--ui-diff-remove-background, rgba(207, 45, 86, 0.12))', color: 'var(--ui-diff-remove-foreground, #91203c)' },
+  meta: MUTED
+}
+// `---`/`+++` are file headers only before the first hunk; inside one, `----` is a removed `---` line.
+function diffLineKinds(lines) {
+  let inHunk = false
+  return lines.map(line => {
+    if (line.startsWith('@@')) { inHunk = true; return 'meta' }
+    if (!inHunk) return line.startsWith('---') || line.startsWith('+++') ? 'meta' : null
+    if (line.startsWith('+')) return 'add'
+    if (line.startsWith('-')) return 'remove'
+    return null
+  })
+}
+
+function DiffField({ diff }) {
+  const lines = String(diff).split('\n')
+  const kinds = diffLineKinds(lines)
+  return jsx(LabelledPre, {
+    name: 'diff',
+    lines: lines.map((line, i) => jsx('div', {
+      'data-wr-diff-line': kinds[i] || 'context',
+      className: 'px-1.5',
+      style: kinds[i] ? DIFF_LINE[kinds[i]] : undefined,
+      children: line || ' '
+    }, i))
+  })
+}
+
+function OpView({ op }) {
+  const fields = Object.entries(op.fields).filter(([, v]) => v !== '' && v !== null)
+  return jsxs('div', {
+    className: 'flex flex-col gap-1.5 rounded p-2',
+    style: BORDER,
+    children: [
+      jsx('div', {
+        className: 'text-[0.6875rem]',
+        style: MUTED,
+        children: `op ${op.index} · ${op.action}${op.subject ? ` · ${op.subject}` : ''}`
+      }),
+      ...fields.map(([name, value]) => jsx(Field, { name, value }, name)),
+      op.diff ? jsx(DiffField, { diff: op.diff }) : null
+    ].filter(Boolean)
+  })
+}
+
+// Approve / Reject: real `disabled` attribute, visibly dimmed, not-allowed cursor. The wrapper span owns the
+// title and the cursor (see ReviewFooter): a disabled button has pointer-events: none, so its own title never shows.
+const DECISION_TITLE = 'Decisions are turned off for this profile (read-only).'
+// A usable Approve is the primary action; Reject, and any disabled button, keep the neutral variant.
+function decisionButton(label, reason, onClick) {
+  return jsx('span', {
+    title: reason || undefined,
+    style: { cursor: reason ? 'not-allowed' : undefined, display: 'inline-flex' },
+    children: jsx(Button, {
+      variant: !reason && label === 'Approve' ? 'default' : 'secondary',
+      disabled: Boolean(reason),
+      onClick,
+      style: reason ? { opacity: 0.45, cursor: 'not-allowed' } : undefined,
+      children: label
+    })
+  })
+}
+
+// ---- decisions: plain functions, so the render checks can call them without a renderer ----
+
+// Why Approve / Reject cannot be used now, as a tooltip string ('' = usable). The gate and the in-flight
+// decision apply to both buttons; Approve also needs the preview itself to be `ready`.
+function decisionGate(rec, decision) {
+  const common = commonGate(rec, decision)
+  const approve = common || (rec.status === 'ready' ? '' : rec.reason || 'This preview cannot be approved.')
+  return { approve, reject: common }
+}
+
+function commonGate(rec, decision) {
+  if (!rec.decisions_enabled) return DECISION_TITLE
+  if (decision.busy) return 'A decision is in progress.'
+  if (decision.refreshing) return 'Loading the latest preview…'
+  if (decision.stale) return 'Preview again before deciding.'
+  if (!rec.expect || decision.settled) return 'This proposal is no longer pending.'
+  return ''
+}
+
+const ALREADY_TEXT = {
+  applied: 'Already approved elsewhere. Nothing changed.',
+  rejected: 'Already rejected elsewhere. Nothing changed.'
+}
+
+function textOr(value, fallback) {
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback
+}
+
+// What one decision reply means for the dialog. `close` ends the dialog; `toast` is fixed wording, never
+// the record, its id, the reason or the expect value. `notice` stays in the dialog. `settled`: nothing more
+// can be decided on this record from here. `stale`: the preview must be read again before deciding.
+function decisionOutcome(kind, result, error) {
+  const closed = toast => ({ close: true, settled: true, stale: false, toast })
+  if (error) {
+    const failed = describeFailure(error)
+    return { close: false, settled: false, stale: true, notice: { tone: 'error', text: failed.text, detail: failed.detail } }
+  }
+  const status = result?.status
+  if (status === 'applied') {
+    return closed({ kind: 'success', message: `Approved. The change was written to ${kind === 'skills' ? 'skills' : 'memory'}.` })
+  }
+  if (status === 'rejected') return closed({ kind: 'info', message: 'Rejected. Nothing was written.' })
+  if (status === 'already_resolved') {
+    const known = typeof result.prior === 'string' && Object.prototype.hasOwnProperty.call(ALREADY_TEXT, result.prior)
+    return closed({ kind: 'info', message: known ? ALREADY_TEXT[result.prior] : 'Already resolved elsewhere. Nothing changed.' })
+  }
+  if (status === 'needs_review') {
+    return {
+      close: false, settled: true, stale: false,
+      notice: { tone: 'warning', text: textOr(result.reason, 'Hermes marked this write as needing review.') }
+    }
+  }
+  if (status === 'conflict') {
+    return {
+      close: false, settled: false, stale: true,
+      notice: { tone: 'error', text: textOr(result.reason, 'Nothing was written. Preview again to see the record as it is now.') }
+    }
+  }
+  return {
+    close: false, settled: false, stale: true,
+    notice: { tone: 'error', text: 'Hermes sent an answer this plugin does not recognise. Preview again to see the record.' }
+  }
+}
+
+// ---- review dialog ----
+
+const IDLE = { busy: false, notice: null, settled: false, stale: false, refreshing: false }
+
+// The outcome of a decision that did not close the dialog. Bordered and tinted, in the primary text colour,
+// so it is read before the buttons. `role` lets a screen reader announce it.
+const NOTICE_COLOR = {
+  warning: 'var(--ui-warning, #d69e2e)',
+  error: 'var(--ui-danger, #f87171)'
+}
+const tintedBox = tone => ({
+  border: `1px solid ${NOTICE_COLOR[tone]}`,
+  background: `color-mix(in srgb, ${NOTICE_COLOR[tone]} 12%, transparent)`,
+  color: 'var(--ui-text-primary)'
+})
+function Notice({ notice }) {
+  const warning = notice.tone === 'warning'
+  return jsxs('div', {
+    role: warning ? 'status' : 'alert',
+    title: notice.detail || undefined,
+    className: 'flex flex-col gap-0.5 rounded p-2 text-[0.8125rem]',
+    style: tintedBox(notice.tone),
+    children: [
+      jsx('div', { className: 'font-semibold', children: warning ? 'Needs review' : 'Not decided' }),
+      jsx('div', { children: notice.text })
+    ]
+  })
+}
+
+// Footer pinned under the scrolling body. With no record yet (loading, or the preview failed), no decision
+// buttons. `retry`: the preview failed, so offer Preview again even without a decision notice.
+function ReviewFooter({ rec, decision, retry, onApprove, onReject, onClose, onPreviewAgain }) {
+  const gate = rec ? decisionGate(rec, decision) : null
+  return jsxs('div', {
+    className: 'flex flex-col gap-2 px-4 py-3',
+    style: RULE,
+    children: [
+      decision.notice ? jsx(Notice, { notice: decision.notice }) : null,
+      rec && !rec.decisions_enabled ? jsx('div', { className: 'text-[0.6875rem]', style: MUTED, children: DECISION_TITLE }) : null,
+      decision.refreshing ? jsx('div', { role: 'status', className: 'text-[0.6875rem]', style: MUTED, children: 'Loading the latest preview…' }) : null,
+      jsxs('div', {
+        className: 'flex flex-wrap items-center gap-2',
+        children: [
+          gate ? decisionButton('Approve', gate.approve, onApprove) : null,
+          gate ? decisionButton('Reject', gate.reject, onReject) : null,
+          (decision.stale || retry) && !decision.busy && !decision.refreshing
+            ? jsx(Button, { variant: 'secondary', onClick: onPreviewAgain, children: 'Preview again' })
+            : null,
+          jsx('span', {
+            className: 'ml-auto',
+            children: jsx(Button, { variant: 'ghost', disabled: decision.busy, onClick: onClose, children: 'Close' })
+          })
+        ].filter(Boolean)
+      })
+    ].filter(Boolean)
+  })
+}
+
+function ReviewBody({ rec, fallbackCreatedAt }) {
+  const age = ago(rec.created_at ?? fallbackCreatedAt)
+  return jsxs('div', {
+    className: 'flex flex-col gap-2',
+    children: [
+      jsxs('div', {
+        className: 'flex flex-wrap items-center gap-1.5',
+        children: [
+          jsx(Chip, { children: rec.kind }),
+          jsx(Chip, { children: rec.origin }),
+          jsx(Chip, { children: rec.is_batch ? `batch · ${rec.op_count} ops` : rec.action }),
+          jsx('span', { className: 'text-[0.6875rem]', style: MUTED, children: age ? `${rec.id} · ${age}` : rec.id })
+        ]
+      }),
+      rec.summary ? jsx('div', { className: 'text-[0.75rem]', children: rec.summary }) : null,
+      rec.reason ? jsx('div', { className: 'text-[0.75rem]', children: rec.reason }) : null,
+      rec.notice ? jsx('div', { className: 'text-[0.75rem]', children: rec.notice }) : null,
+      ...rec.ops.map(op => jsx(OpView, { op }, op.index))
+    ].filter(Boolean)
+  })
+}
+
+// Radix would focus the first enabled button (Approve, when it is enabled), so a stray Enter could approve.
+// Focus the dialog itself; Tab reaches the buttons.
+function focusDialog(event) {
+  event.preventDefault()
+  event.currentTarget?.focus?.()
+}
+
+// One record's review. ScopedPane mounts it only while a row is selected in the current scope, so a profile
+// or gateway switch unmounts it with its state. Esc, the X and an outside click are ignored while a decision is
+// in flight; a reply that arrives after the scope changed is dropped.
+function ReviewDialog({ ctx, profile, activation, selected, refreshList, onClose, restoreFocus }) {
+  const [decision, setDecision] = useState(IDLE)
+  const inFlight = useRef(false)
+  // True once a decision closed the dialog, so focus goes to the next row instead of the removed one.
+  const decided = useRef(false)
+  // Set from the Preview again click until the refetch settles: no decision may use the preview being replaced.
+  const refreshing = useRef(false)
+  const preview = useQuery({
+    queryKey: [PLUGIN, 'preview', profile, activation, selected.scope, selected.kind, selected.id],
+    queryFn: () => ctx.rest(`/pending/${selected.kind}/${selected.id}`),
+    retry: retryOnce
+  })
+  // While any refetch runs, react-query still returns the previous preview (isPending false); decisions wait
+  // for the new one. A failed refetch is isError, so the old preview is never actionable after it.
+  const rec = preview.isPending || preview.isError ? null : preview.data
+  const view = { ...decision, refreshing: decision.refreshing || preview.isFetching === true }
+  const retry = preview.isError
+  const sameConnection = () => host.state.profile.get() === profile && gatewayActivationEpoch() === activation
+  // Radix sends Esc, the X and an outside click here too (onOpenChange), so all are ignored while busy.
+  const close = () => { if (!inFlight.current) onClose() }
+
+  async function decide(verb) {
+    if (!rec || inFlight.current || refreshing.current || !sameConnection()) return
+    if (decisionGate(rec, view)[verb]) return
+    inFlight.current = true
+    setDecision({ ...IDLE, busy: true })
+    let outcome
+    try {
+      const result = await ctx.rest(`/pending/${selected.kind}/${selected.id}/${verb}`, {
+        method: 'POST', body: { expect: rec.expect }
+      })
+      outcome = decisionOutcome(selected.kind, result, null)
+    } catch (error) {
+      outcome = decisionOutcome(selected.kind, null, error)
+    }
+    inFlight.current = false
+    if (!sameConnection()) return
+    refreshList()
+    if (outcome.toast) host.notify(outcome.toast)
+    if (outcome.close) {
+      decided.current = true
+      onClose()
+      return
+    }
+    setDecision({ busy: false, notice: outcome.notice, settled: outcome.settled, stale: outcome.stale })
+  }
+
+  async function previewAgain() {
+    if (inFlight.current || refreshing.current) return
+    refreshing.current = true
+    setDecision({ ...IDLE, refreshing: true })
+    try {
+      await preview.refetch()
+    } finally {
+      refreshing.current = false
+      if (sameConnection()) setDecision(current => ({ ...current, refreshing: false }))
+    }
+  }
+
+  let body
+  if (preview.isPending) {
+    body = jsx('div', { className: 'text-[0.75rem]', style: MUTED, children: 'Loading record…' })
+  } else if (preview.isError) {
+    const failed = describeFailure(preview.error)
+    body = jsx('div', {
+      className: 'text-[0.75rem]',
+      title: failed.detail,
+      children: failed.gone ? 'That record is no longer pending. Pick another item.' : failed.text
+    })
+  } else {
+    body = jsx(ReviewBody, { rec: preview.data, fallbackCreatedAt: selected.created_at })
+  }
+
+  return jsx(Dialog, {
+    open: true,
+    onOpenChange: open => { if (!open) close() },
+    children: jsxs(DialogContent, {
+      style: DIALOG_SIZE,
+      onOpenAutoFocus: focusDialog,
+      // Radix returns focus to a DialogTrigger; this dialog opens from a list row without one, so on close
+      // Radix would drop focus to the page. Hand it back to the list instead. Radix runs this after unmount.
+      onCloseAutoFocus: event => {
+        event.preventDefault()
+        restoreFocus(decided.current)
+      },
+      chrome: jsx(ReviewFooter, {
+        rec,
+        decision: view,
+        retry,
+        onApprove: () => decide('approve'),
+        onReject: () => decide('reject'),
+        onClose: close,
+        onPreviewAgain: previewAgain
+      }),
+      children: [
+        jsxs(DialogHeader, {
+          style: { paddingRight: '2rem' },
+          children: [
+            jsx(DialogTitle, { children: 'Review pending write' }),
+            jsx(DialogDescription, { children: 'Approve applies this staged write. Reject discards it.' })
+          ]
+        }),
+        body
+      ]
+    })
+  })
+}
+
+// ---- needs-review banner ----
+
+const CODE = { ...MONO, fontSize: '0.75rem' }
+function commands(verb, kinds) {
+  return kinds.flatMap((kind, i) => [
+    i ? ' or ' : null,
+    jsx('code', { style: CODE, children: `/${kind} ${verb}` }, `${verb}-${kind}`)
+  ]).filter(Boolean)
+}
+
+// Writes whose approval stopped partway: core's `needs_review` counts, per kind plus "total", for both
+// kinds whatever the filter. Those writes are not in `items` or `counts` and cannot be approved; a
+// person checks the files and closes each one with `/<kind> reject <id>`. Nothing here can do that, so
+// the banner has no buttons.
+function NeedsReviewBanner({ counts }) {
+  const one = counts.total === 1
+  const kinds = ['memory', 'skills'].filter(kind => counts[kind] > 0)
+  return jsxs('div', {
+    role: 'status',
+    'data-wr-needs-review': '',
+    className: 'flex flex-col gap-1 rounded p-2 text-[0.75rem]',
+    style: tintedBox('warning'),
+    children: [
+      jsx('div', {
+        className: 'font-semibold',
+        children: one ? '1 write needs review' : `${counts.total} writes need review`
+      }),
+      jsx('div', { className: 'text-[0.6875rem]', style: MUTED, children: `memory ${counts.memory} · skills ${counts.skills}` }),
+      jsx('div', {
+        children: one
+          ? 'Its approval stopped partway, so the files may be partly changed. It isn’t in the list below and can’t be approved.'
+          : 'Their approval stopped partway, so the files may be partly changed. They aren’t in the list below and can’t be approved.'
+      }),
+      jsxs('div', {
+        children: [
+          `Check the files by hand, then close ${one ? 'it' : 'each one'} with `,
+          ...commands('reject <id>', kinds),
+          '. ',
+          ...commands('pending', kinds),
+          one ? ' shows its id.' : ' shows their ids.'
+        ]
+      })
+    ]
+  })
+}
+
+// ---- pane ----
+
+// The profile and gateway activation every query is keyed by; a change of either is a new connection.
+function useConnection() {
+  return { profile: useValue(host.state.profile), activation: useGatewayActivationEpoch() }
+}
+
+// The pending list for one filter. A failed read shows nothing from an earlier read: react-query keeps
+// the last good data on error, and showing those counts as current would be wrong.
+function usePendingList(ctx, { profile, activation }, filter, page = 1) {
+  const list = useQuery({
+    queryKey: [PLUGIN, 'pending', profile, activation, filter, page],
+    queryFn: () => ctx.rest(`/pending?kind=${filter}&page=${page}`),
+    refetchInterval: POLL_MS,
+    retry: retryOnce
+  })
+  const failed = list.isError ? describeFailure(list.error) : null
+  return { list, failed, data: failed || list.isPending ? undefined : list.data }
+}
+
+function PendingPane({ ctx }) {
+  const { profile, activation } = useConnection()
+  return jsx(ScopedPane, { ctx, profile, activation }, JSON.stringify([profile, activation]))
+}
+
+function ScopedPane({ ctx, profile, activation }) {
+  const [filter, setFilter] = useState('all')
+  const [page, setPage] = useState(1)
+  const [selected, setSelected] = useState(null)
+  // Where keyboard focus goes when the dialog closes: the row that opened it, or after a decision removed
+  // that row, the row now in its place. `paneRef` is the fallback and tells whether this scope still shows.
+  const paneRef = useRef(null)
+  const opener = useRef(null)
+  const { list, failed, data } = usePendingList(ctx, { profile, activation }, filter, page)
+  const queryClient = useQueryClient()
+  // After a decision every cached list page of this connection is out of date, not only the one shown
+  // (the badge's, other filters', other pages').
+  const refreshLists = () => queryClient.invalidateQueries({ queryKey: [PLUGIN, 'pending', profile, activation] })
+  const items = data?.items ?? []
+  // A decision can empty the last page: show the page that is now last instead. Always step back at least one
+  // page, so a reply whose `total` disagrees with its empty `items` cannot set the same page on every render.
+  if (data && page > 1 && items.length === 0) setPage(Math.min(page - 1, Math.max(1, Math.ceil(data.total / data.page_size))))
+  const needsReview = data?.needs_review?.total > 0 ? data.needs_review : null
+
+  function restoreFocus(decided) {
+    const pane = paneRef.current
+    const from = opener.current
+    opener.current = null
+    // A profile or gateway switch replaced this pane: leave focus to the host.
+    if (!pane || !pane.isConnected) return
+    const rows = [...pane.querySelectorAll('[data-wr-row]')]
+    let target = null
+    if (from) {
+      const own = rows.find(row => row.getAttribute('data-wr-row') === from.key)
+      if (!decided && own) target = own
+      else {
+        const others = rows.filter(row => row.getAttribute('data-wr-row') !== from.key)
+        target = others[Math.min(from.index, others.length - 1)] || null
+      }
+    }
+    ;(target || pane).focus()
+  }
+
+  let body
+  if (failed) {
+    body = jsxs('div', {
+      className: 'flex flex-col items-start gap-2 text-[0.75rem]',
+      children: [
+        jsx('div', { title: failed.detail, children: failed.text }),
+        jsx(Button, { onClick: () => list.refetch(), children: 'Retry' })
+      ]
+    })
+  } else if (list.isPending) {
+    body = jsx('div', { className: 'text-[0.75rem]', style: MUTED, children: 'Loading pending writes…' })
+  } else if (items.length === 0) {
+    body = jsx('div', { className: 'text-[0.75rem]', style: MUTED, children: 'No pending writes in this profile.' })
+  } else {
+    body = jsx('div', {
+      className: 'flex flex-col gap-1',
+      children: items.map((item, index) => {
+        const active = selected && selected.scope === data.scope && selected.kind === item.kind && selected.id === item.id
+        return jsxs('button', {
+          type: 'button',
+          'data-wr-row': `${item.kind}:${item.id}`,
+          onClick: () => {
+            opener.current = { key: `${item.kind}:${item.id}`, index }
+            setSelected({ kind: item.kind, id: item.id, scope: data.scope, created_at: item.created_at })
+          },
+          className: 'flex flex-col items-start gap-0.5 rounded p-2 text-left text-[0.75rem]',
+          style: { ...BORDER, background: active ? 'var(--ui-stroke-secondary)' : 'transparent' },
+          children: [
+            jsxs('div', {
+              className: 'flex w-full items-center gap-1.5',
+              children: [
+                jsx(Chip, { children: item.kind }),
+                jsx('span', { className: 'min-w-0 truncate font-medium', children: item.action }),
+                jsx('span', { className: 'ml-auto shrink-0 text-[0.6875rem]', style: MUTED, children: ago(item.created_at) })
+              ]
+            }),
+            jsx('div', { className: 'w-full truncate text-[0.6875rem]', style: MUTED, children: item.summary }),
+            jsx('div', {
+              className: 'text-[0.6875rem]',
+              style: MUTED,
+              children: `${item.origin}${item.is_batch ? ` · batch of ${item.op_count}` : ''}`
+            })
+          ]
+        }, `${item.kind}:${item.id}`)
+      })
+    })
+  }
+
+  return jsxs('div', {
+    ref: paneRef,
+    // Focusable only from code: the fallback when the dialog closes and no row is left to focus.
+    tabIndex: -1,
+    style: { outline: 'none' },
+    className: 'flex h-full min-h-0 flex-col gap-2 overflow-auto p-3 text-sm',
+    children: [
+      jsxs('div', {
+        className: 'flex items-baseline justify-between gap-2',
+        children: [
+          jsx('div', { className: 'font-medium', children: 'Lesson review' }),
+          jsx(Chip, { title: 'Profile this pane reads', children: profile || 'default' })
+        ]
+      }),
+      data
+        ? jsx('div', {
+          className: 'text-[0.6875rem]',
+          style: MUTED,
+          children: `memory ${data.counts.memory} · skills ${data.counts.skills}`
+        })
+        : null,
+      data ? jsx(Gates, { gates: data.gates }) : null,
+      needsReview ? jsx(NeedsReviewBanner, { counts: needsReview }) : null,
+      jsx('div', {
+        className: 'flex gap-1',
+        children: FILTERS.map(f => jsx('button', {
+          type: 'button',
+          onClick: () => { setFilter(f.id); setPage(1); setSelected(null) },
+          className: 'rounded px-2 py-0.5 text-[0.6875rem]',
+          style: { ...BORDER, ...(filter === f.id ? { color: 'var(--ui-accent)' } : MUTED) },
+          children: f.label
+        }, f.id))
+      }),
+      body,
+      data && data.total > data.page_size ? jsx(Pager, { data, setPage }) : null,
+      // The dialog belongs to the scope it was opened in. ScopedPane remounts on a profile or gateway switch;
+      // a failed list poll (no data) leaves an open review alone instead of closing it mid-read or mid-decision.
+      selected && (!data || selected.scope === data.scope)
+        ? jsx(ReviewDialog, {
+          ctx, profile, activation, selected, refreshList: refreshLists,
+          onClose: () => setSelected(null),
+          restoreFocus
+        }, JSON.stringify([selected.scope, selected.kind, selected.id]))
+        : null
+    ].filter(Boolean)
+  })
+}
+
+// Core answers one page at a time (25 rows); `total` counts every page.
+function Pager({ data, setPage }) {
+  const first = (data.page - 1) * data.page_size + 1
+  const last = first + data.items.length - 1
+  return jsxs('div', {
+    className: 'flex items-center gap-1 text-[0.6875rem]',
+    style: MUTED,
+    children: [
+      jsx('span', { className: 'mr-auto', children: `${first}–${last} of ${data.total}` }),
+      jsx(Button, { variant: 'ghost', disabled: data.page <= 1, onClick: () => setPage(data.page - 1), children: 'Previous' }),
+      jsx(Button, { variant: 'ghost', disabled: last >= data.total, onClick: () => setPage(data.page + 1), children: 'Next' })
+    ]
+  })
+}
+
+function PendingBadge({ ctx }) {
+  const { failed, data } = usePendingList(ctx, useConnection(), 'all')
+  return jsx('span', {
+    className: 'px-1.5 text-[0.6875rem]',
+    style: MUTED,
+    title: failed ? failed.text : 'Staged memory/skill writes awaiting review',
+    children: data ? `pending writes: ${data.counts.total}` : 'pending writes: –'
+  })
+}
+
+export default {
+  id: PLUGIN,
+  // Same name as the server package (plugin.yaml `name`, dashboard/manifest.json `name`). Desktop's
+  // Plugins page shows this name on the desktop card and, when the two halves pair, on the joined card;
+  // the server half can only display its manifest name. tests/render/run.mjs checks it against plugin.yaml.
+  name: PLUGIN,
+  // Opt-in: inventories in Capabilities > Plugins and stays off until the user turns it on.
+  defaultEnabled: false,
+  register(ctx) {
+    ctx.register({
+      id: 'pane',
+      area: PANES_AREA,
+      title: 'Lesson review',
+      data: { placement: 'right', width: '320px' },
+      render: () => jsx(PendingPane, { ctx })
+    })
+    ctx.register({
+      id: 'badge',
+      area: STATUSBAR_AREAS.right,
+      order: 125,
+      render: () => jsx(PendingBadge, { ctx })
+    })
+  }
+}

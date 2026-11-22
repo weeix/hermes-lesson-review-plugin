@@ -1,0 +1,19 @@
+{
+  "name": "lesson-review-render-smoke",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Render smoke test for desktop/plugin.js (stubbed @hermes/plugin-sdk, real React).",
+  "scripts": {
+    "test": "node run.mjs && node interact.mjs && node focus.mjs"
+  },
+  "dependencies": {
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@tanstack/react-query": "5.104.1",
+    "jsdom": "26.1.0",
+    "radix-ui": "1.7.0"
+  }
+}

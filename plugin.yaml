@@ -1,0 +1,17 @@
+name: lesson-review
+version: 0.1.0
+manifest_version: 2
+description: "Lesson review: a review pane for pending writes that write_approval stages for Hermes memory and skills; approve or reject each one."
+author: weeix
+tags: [write-approval, pending-writes, memory, skills, review]
+# Unified package: this folder carries the desktop half (desktop/plugin.js) and the backend
+# (dashboard/plugin_api.py). It registers no agent tools or hooks.
+provides_tools: []
+provides_hooks: []
+# Read per profile from plugins.entries.lesson-review.settings (hermes plugins config lesson-review,
+# or Desktop Settings -> Plugins).
+config_schema:
+  allow_decisions:
+    type: boolean
+    default: true
+    description: "Allow approving or rejecting pending writes from the review dialog (set false for read-only review)."

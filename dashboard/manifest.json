@@ -1,0 +1,9 @@
+{
+  "name": "lesson-review",
+  "label": "Lesson review",
+  "description": "Review staged memory and skill writes.",
+  "version": "0.1.0",
+  "icon": "Eye",
+  "tab": { "path": "/lesson-review", "hidden": true },
+  "api": "plugin_api.py"
+}

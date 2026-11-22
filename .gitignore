@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+.pytest_cache/
+tests/render/node_modules/
+tests/render/package-lock.json
+tests/render/.generated/
+*.log
