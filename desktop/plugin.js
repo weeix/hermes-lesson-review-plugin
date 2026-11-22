@@ -436,18 +436,68 @@ function ReviewDialog({ ctx, profile, activation, selected, refreshList, onClose
 }
 
 const CODE = { ...MONO, fontSize: '0.75rem' }
-function commands(verb, kinds) {
+
+// Puts a slash command in the focused chat's input and the caret after it, for the user to finish (`<id>`)
+// and send; never sends it. Refuses, with a toast, instead of writing somewhere wrong: no chat focused, the
+// focused chat in another profile than this pane (the command would act on that profile's store), or text
+// already in the input (the composer's own prefix insert would turn that text into the command's argument).
+async function stageCommandInComposer(command, profile) {
+  const say = message => host.notify({ kind: 'warning', message })
+  const composer = host.composer
+  const sessionId = host.state?.focusedSessionId?.get?.() ?? null
+  if (!sessionId || typeof composer?.setDraft !== 'function' || typeof composer?.getDraft !== 'function') {
+    say(`Open a chat first, then click ${command} again.`)
+    return
+  }
+  const chatProfile = host.state?.focusedSessionProfile?.get?.()
+  if (typeof chatProfile === 'string' && (chatProfile || 'default') !== (profile || 'default')) {
+    say(`The open chat belongs to profile ${chatProfile}, not ${profile || 'default'}. Open a chat in ${profile || 'default'} first.`)
+    return
+  }
+  // setDraft keeps the text as given, so `/kind reject ` ends in the space the id goes after.
+  const text = command.endsWith('<id>') ? command.slice(0, -'<id>'.length) : command
+  try {
+    const draft = await composer.getDraft(sessionId)
+    if (draft && draft.trim() && draft.trim() !== text.trim()) {
+      say(`The chat input already has text. Clear it, then click ${command} again.`)
+      return
+    }
+    if (!(await composer.setDraft(sessionId, text))) {
+      say('Could not reach the chat input. Click into the chat, then try again.')
+      return
+    }
+  } catch {
+    say('Could not reach the chat input. Click into the chat, then try again.')
+    return
+  }
+  composer.focus?.(sessionId)
+}
+
+function commandChip(kind, verb, profile) {
+  const label = `/${kind} ${verb}`
+  return jsx('button', {
+    type: 'button',
+    'data-wr-cmd': label,
+    title: `Insert ${label} into the chat input`,
+    onClick: () => { stageCommandInComposer(label, profile) },
+    className: 'inline-flex items-center rounded px-1 py-px hover:opacity-80',
+    style: { ...BORDER, background: 'color-mix(in srgb, var(--ui-text-primary) 6%, transparent)', cursor: 'pointer' },
+    children: jsx('code', { style: CODE, children: label })
+  }, `${verb}-${kind}`)
+}
+
+function commands(verb, kinds, profile) {
   return kinds.flatMap((kind, i) => [
     i ? ' or ' : null,
-    jsx('code', { style: CODE, children: `/${kind} ${verb}` }, `${verb}-${kind}`)
+    commandChip(kind, verb, profile)
   ]).filter(Boolean)
 }
 
 // Writes whose approval stopped partway: core's `needs_review` counts, per kind plus "total", for both
 // kinds whatever the filter. Those writes are not in `items` or `counts` and cannot be approved; a
-// person checks the files and closes each one with `/<kind> reject <id>`. Nothing here can do that, so
-// the banner has no buttons.
-function NeedsReviewBanner({ counts }) {
+// person checks the files and closes each one with `/<kind> reject <id>`. Clicking a command puts it in
+// the chat input without sending it.
+function NeedsReviewBanner({ counts, profile }) {
   const one = counts.total === 1
   const kinds = ['memory', 'skills'].filter(kind => counts[kind] > 0)
   return jsxs('div', {
@@ -469,10 +519,11 @@ function NeedsReviewBanner({ counts }) {
       jsxs('div', {
         children: [
           `Check the files by hand, then close ${one ? 'it' : 'each one'} with `,
-          ...commands('reject <id>', kinds),
+          ...commands('reject <id>', kinds, profile),
           '. ',
-          ...commands('pending', kinds),
-          one ? ' shows its id.' : ' shows their ids.'
+          ...commands('pending', kinds, profile),
+          one ? ' shows its id.' : ' shows their ids.',
+          ' Click a command to put it in the chat input.'
         ]
       })
     ]
@@ -787,7 +838,7 @@ function ScopedPane({ ctx, profile, activation }) {
         })
         : null,
       data ? jsx(Gates, { gates: data.gates }) : null,
-      needsReview ? jsx(NeedsReviewBanner, { counts: needsReview }) : null,
+      needsReview ? jsx(NeedsReviewBanner, { counts: needsReview, profile }) : null,
       jsxs('div', {
         className: 'flex items-center gap-1',
         children: [

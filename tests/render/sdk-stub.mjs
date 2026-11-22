@@ -14,7 +14,26 @@ export const PANES_AREA = 'panes'
 export const STATUSBAR_AREAS = { right: 'statusBar.right' }
 // notify() records the toast; the real host shows it in the notification stack.
 export const host = {
-  state: { profile: { get: () => globalThis.__WR_PROFILE__ } },
+  state: {
+    profile: { get: () => globalThis.__WR_PROFILE__ },
+    focusedSessionId: { get: () => globalThis.__WR_SESSION_ID__ ?? null },
+    focusedSessionProfile: { get: () => globalThis.__WR_SESSION_PROFILE__ ?? globalThis.__WR_PROFILE__ }
+  },
+  // The composer verbs record what they were asked; `__WR_DRAFT__` is the input's text, and
+  // `__WR_SET_DRAFT_OK__ === false` makes setDraft report that no input answered.
+  composer: {
+    async getDraft(sessionId) {
+      ;(globalThis.__WR_COMPOSER__ ||= []).push({ op: 'getDraft', sessionId })
+      return globalThis.__WR_DRAFT__ ?? ''
+    },
+    async setDraft(sessionId, text) {
+      ;(globalThis.__WR_COMPOSER__ ||= []).push({ op: 'setDraft', sessionId, text })
+      return globalThis.__WR_SET_DRAFT_OK__ !== false
+    },
+    focus(sessionId) {
+      ;(globalThis.__WR_COMPOSER__ ||= []).push({ op: 'focus', sessionId })
+    }
+  },
   notify(input) {
     ;(globalThis.__WR_TOASTS__ ||= []).push(input)
   }

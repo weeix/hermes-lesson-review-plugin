@@ -133,7 +133,7 @@ const OFF_TEXT = 'Lesson review is turned off on this Hermes. Turn it on in Capa
   check('pane title', /Lesson review/.test(paneHtml))
   check('pane counts line', paneHtml.includes(`memory ${all.counts.memory} · skills ${all.counts.skills}`))
   check('gates line shows the backend gate states', paneHtml.includes('write_approval: memory on · skills on'), text(paneHtml).slice(0, 200))
-  check('list rows rendered (one per item, in order)', JSON.stringify([...paneHtml.matchAll(/data-wr-row="([^"]+)"/g)].map(m => m[1]))
+  check('list rows rendered (one per item, in order)', JSON.stringify([...paneHtml.matchAll(/data-wr-row="([^"]+)"/g)].map(m => m[1].replace(/&lt;/g, "<").replace(/&gt;/g, ">")))
     === JSON.stringify(all.items.map(i => `${i.kind}:${i.id}`)))
   check('batch row labelled', /batch of \d+/.test(paneHtml))
   check('dialog: batch view shows op breakdown', /op 2 · patch/.test(paneHtml) && /op 3 · write_file/.test(paneHtml))
@@ -428,16 +428,23 @@ for (const [name, outcome, toast] of TOASTS) {
     t1.includes('approval stopped partway') && t1.includes('isn’t in the list below') && t1.includes('can’t be approved'), t1)
   check('needs review (1 memory): close it with /memory reject <id>, nothing about skills',
     b1.includes('<code') && t1.includes('/memory reject &lt;id&gt;') && !t1.includes('/skills'), t1)
-  check('needs review (1 memory): /memory pending named for the id', t1.includes('/memory pending shows its id.'), t1)
-  check('needs review: banner has no Approve or any other button', b1 !== '' && !/<button/.test(b1))
+  check('needs review (1 memory): /memory pending named for the id', t1.includes('/memory pending shows its id'), t1)
+  const cmdBtns1 = [...b1.matchAll(/data-wr-cmd="([^"]+)"/g)].map(m => m[1].replace(/&lt;/g, "<").replace(/&gt;/g, ">"))
+  check('needs review (1 memory): clickable composer command chips only, no Approve button',
+    JSON.stringify(cmdBtns1) === JSON.stringify(['/memory reject <id>', '/memory pending'])
+    && (b1.match(/<button/g) || []).length === cmdBtns1.length && !b1.includes('>Approve<'), JSON.stringify(cmdBtns1))
   check('needs review: warning colour, not muted', b1.includes('var(--ui-warning, #d69e2e)'), b1.slice(0, 200))
   check('needs review: the list rows, counts line and badge count only pending writes', rowCount(one.paneHtml) === all.items.length
     && one.paneHtml.includes(`memory ${all.counts.memory} · skills ${all.counts.skills}`) && one.badgeHtml.includes(`pending writes: ${all.counts.total}`))
 
-  const t2 = flat(bannerOf(renderScenario(listWith({ memory: 2, skills: 1, total: 3 })).paneHtml))
+  const b2 = bannerOf(renderScenario(listWith({ memory: 2, skills: 1, total: 3 })).paneHtml)
+  const t2 = flat(b2)
+  const cmdBtns2 = [...b2.matchAll(/data-wr-cmd="([^"]+)"/g)].map(m => m[1].replace(/&lt;/g, "<").replace(/&gt;/g, ">"))
   check('needs review (both kinds): plural count and per-kind line', t2.includes('3 writes need review') && t2.includes('memory 2 · skills 1'), t2)
   check('needs review (both kinds): both reject commands, each one', t2.includes('close each one with /memory reject &lt;id&gt; or /skills reject &lt;id&gt;.'), t2)
-  check('needs review (both kinds): both pending commands', t2.includes('/memory pending or /skills pending shows their ids.'), t2)
+  check('needs review (both kinds): both pending commands and 4 clickable command chips',
+    t2.includes('/memory pending or /skills pending shows their ids')
+    && JSON.stringify(cmdBtns2) === JSON.stringify(['/memory reject <id>', '/skills reject <id>', '/memory pending', '/skills pending']), t2)
 
   const t3 = flat(bannerOf(renderScenario(listWith({ memory: 0, skills: 1, total: 1 })).paneHtml))
   check('needs review (1 skill): /skills reject <id> only', t3.includes('/skills reject &lt;id&gt;') && !t3.includes('/memory'), t3)

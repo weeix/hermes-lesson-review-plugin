@@ -21,8 +21,10 @@ const memoryItems = ids => ids.map((id, n) => ({
 }))
 const ITEMS = memoryItems(['aaaa0001', 'bbbb0002', 'cccc0003'])
 // One page of the list, as core answers it: 25 per page, `total` over every page.
-const listOf = (items, page = 1, decisionsEnabled = true) => ({ kind: 'all', scope: 'default', page, page_size: 25, total: items.length,
-  decisions_enabled: decisionsEnabled, counts: { memory: items.length, skills: 0, total: items.length },
+const NO_REVIEW = { memory: 0, skills: 0, total: 0 }
+const listOf = (items, page = 1, decisionsEnabled = true, needsReview = NO_REVIEW) => ({ kind: 'all', scope: 'default', page,
+  page_size: 25, total: items.length, decisions_enabled: decisionsEnabled, needs_review: needsReview,
+  counts: { memory: items.length, skills: 0, total: items.length },
   gates: { memory: { write_approval: true }, skills: { write_approval: true } }, items: items.slice((page - 1) * 25, page * 25) })
 const preview = id => memoryPreview(id)
 const applied = id => ({ id, subsystem: 'memory', status: 'applied' })
@@ -31,9 +33,16 @@ const applied = id => ({ id, subsystem: 'memory', status: 'applied' })
 // `state.listError`, when set, fails every list read;
 // `state.scope` is the scope the list reports. The QueryClient has Desktop's own defaults
 // (apps/desktop/src/lib/query-client.ts), so react-query's default retries apply unless the plugin overrides them.
-async function mountPane({ decide = applied, items = ITEMS, listError = null, decisionsEnabled = true, previewOf = null } = {}) {
+// `sessionId`, `sessionProfile` and `draft` describe the focused chat for the composer stub (sdk-stub.mjs).
+async function mountPane({ decide = applied, items = ITEMS, listError = null, decisionsEnabled = true, previewOf = null,
+  needsReview = NO_REVIEW, sessionId = null, sessionProfile = undefined, draft = '', setDraftOk = true } = {}) {
   globalThis.__WR_PROFILE__ = 'default'
   globalThis.__WR_ACTIVATION__ = 1
+  globalThis.__WR_SESSION_ID__ = sessionId
+  globalThis.__WR_SESSION_PROFILE__ = sessionProfile
+  globalThis.__WR_DRAFT__ = draft
+  globalThis.__WR_SET_DRAFT_OK__ = setDraftOk
+  globalThis.__WR_COMPOSER__ = []
   globalThis.__WR_TOASTS__ = []
   const state = { items: [...items], posts: [], postBodies: [], previews: [], listReads: 0, listError, scope: 'default', listPaths: [] }
   const ctx = {
@@ -53,7 +62,7 @@ async function mountPane({ decide = applied, items = ITEMS, listError = null, de
         state.listPaths.push(path)
         if (state.listError) return Promise.reject(state.listError)
         const page = Number(new URLSearchParams(path.split('?')[1]).get('page') || 1)
-        return Promise.resolve({ ...listOf(state.items, page, decisionsEnabled), scope: state.scope })
+        return Promise.resolve({ ...listOf(state.items, page, decisionsEnabled, needsReview), scope: state.scope })
       }
       state.previews.push(path)
       const id = path.split('/')[3]
@@ -429,6 +438,43 @@ async function selectAllAndReject(s, n) {
   await settle()
   check('bulk done: select mode ends and focus stays in the pane', !s.host.querySelector('[data-wr-bulk-bar]')
     && pane.contains(document.activeElement), describe(document.activeElement))
+  await act(async () => s.root.unmount())
+}
+
+// ---- 14. needs_review banner commands: a click puts the command in the focused chat's input, never sends it ----
+const composerLog = () => JSON.stringify(globalThis.__WR_COMPOSER__)
+const cmd = (s, label) => s.host.querySelector(`[data-wr-cmd="${label}"]`)
+{
+  const s = await mountPane({ needsReview: { memory: 1, skills: 1, total: 2 }, sessionId: 'sess-42' })
+  check('command chips: one per command and kind', ['/memory reject <id>', '/skills reject <id>', '/memory pending', '/skills pending']
+    .every(label => cmd(s, label)?.tagName === 'BUTTON'))
+  await clickEl(cmd(s, '/memory pending'))
+  check('/memory pending: written to the empty input of the focused chat, then focused', composerLog() === JSON.stringify([
+    { op: 'getDraft', sessionId: 'sess-42' }, { op: 'setDraft', sessionId: 'sess-42', text: '/memory pending' },
+    { op: 'focus', sessionId: 'sess-42' }]), composerLog())
+  globalThis.__WR_COMPOSER__ = []
+  await clickEl(cmd(s, '/skills reject <id>'))
+  check('/skills reject <id>: the placeholder is dropped, the space before the id kept',
+    globalThis.__WR_COMPOSER__.find(c => c.op === 'setDraft')?.text === '/skills reject ', composerLog())
+  check('command chips: nothing is sent and no toast', globalThis.__WR_TOASTS__.length === 0 && s.state.posts.length === 0)
+  await act(async () => s.root.unmount())
+}
+const refusal = async (name, opts, pattern) => {
+  const s = await mountPane({ needsReview: { memory: 1, skills: 0, total: 1 }, ...opts })
+  await clickEl(cmd(s, '/memory pending'))
+  const toast = globalThis.__WR_TOASTS__.at(-1)
+  check(name, !globalThis.__WR_COMPOSER__.some(c => c.op === 'setDraft' || c.op === 'focus')
+    && toast?.kind === 'warning' && pattern.test(toast.message), `${composerLog()} ${JSON.stringify(toast)}`)
+  await act(async () => s.root.unmount())
+}
+await refusal('no chat focused: nothing written, a toast says to open one', { sessionId: null }, /Open a chat first/)
+await refusal('chat in another profile: nothing written', { sessionId: 'sess-42', sessionProfile: 'work' }, /belongs to profile work/)
+await refusal('text already in the input: kept, nothing written', { sessionId: 'sess-42', draft: 'half a message' }, /already has text/)
+{
+  const s = await mountPane({ needsReview: { memory: 1, skills: 0, total: 1 }, sessionId: 'sess-42', setDraftOk: false })
+  await clickEl(cmd(s, '/memory pending'))
+  check('no input answered: a toast, no focus', !globalThis.__WR_COMPOSER__.some(c => c.op === 'focus')
+    && /Could not reach the chat input/.test(globalThis.__WR_TOASTS__.at(-1)?.message ?? ''), composerLog())
   await act(async () => s.root.unmount())
 }
 
