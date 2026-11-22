@@ -623,4 +623,15 @@ await refusal('chat owner unknown: nothing written', { sessionId: 'sess-42', ses
   await act(async () => s.root.unmount())
 }
 
+// ---- 19. polling: every 10 s while the pane shows, every 60 s while it doesn't ----
+for (const [visible, ms] of [[true, 10000], [false, 60000]]) {
+  globalThis.__WR_PANE_VISIBLE__ = visible
+  const s = await mountPane()
+  const query = s.client.getQueryCache().find({ queryKey: ['lesson-review', 'pending', 'default', 1, 'local', 'all', 1] })
+  const interval = query?.observers?.[0]?.options?.refetchInterval
+  check(`poll while the pane ${visible ? 'shows' : 'is hidden'}: every ${ms / 1000} s`, interval === ms, String(interval))
+  await act(async () => s.root.unmount())
+}
+globalThis.__WR_PANE_VISIBLE__ = undefined
+
 finish()

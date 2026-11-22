@@ -17,9 +17,9 @@ const PANE_ID = `${PLUGIN}:pane`
 // `pending.changed`) and the end of an agent turn this window is attached to, when that turn's writes have
 // been staged. Both are best effort. Polling covers what sends no event, or an event this window does not
 // get: a slash command (including the banner's reject), the CLI, a turn in a session this window is not
-// attached to, a background review, a route served from a plugin host. 30 s while the pane shows, 60 s
+// attached to, a background review, a route served from a plugin host. 10 s while the pane shows, 60 s
 // while it doesn't.
-const VISIBLE_POLL_MS = 30000
+const VISIBLE_POLL_MS = 10000
 const HIDDEN_POLL_MS = 60000
 const PUSH_EVENTS = [`plugin.${PLUGIN}.pending.changed`, 'message.complete']
 // Events come in bursts (a bulk reject sends one per write; the pane and the badge both listen): the lists
