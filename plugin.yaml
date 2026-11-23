@@ -1,5 +1,5 @@
 name: lesson-review
-version: 0.1.0
+version: 0.1.0-rc.1
 manifest_version: 2
 description: "Lesson review: a review pane for pending writes that write_approval stages for Hermes memory and skills; approve or reject each one."
 author: weeix
