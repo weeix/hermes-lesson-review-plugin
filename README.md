@@ -16,7 +16,7 @@ Review staged memory and skill writes in Hermes Desktop. The pane lists metadata
 On the Hermes backend that Desktop connects to, install and enable the plugin:
 
 ```bash
-hermes plugins install weeix/hermes-write-review-plugin --enable
+hermes plugins install weeix/hermes-lesson-review-plugin --enable
 ```
 
 Restart that backend (`hermes gateway restart` if managed as a gateway service). Then enable `lesson-review` in Desktop under **Capabilities → Plugins**. The desktop pane is opt-in even when the backend plugin is enabled. The Webapp can also show the pane when hosted by a compatible backend.
