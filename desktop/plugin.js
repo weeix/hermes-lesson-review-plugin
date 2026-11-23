@@ -79,9 +79,9 @@ function describeFailure(error) {
   if (status === 503 && /Write Review API/i.test(detail)) {
     return { text: 'Lesson review needs a Hermes backend with the Write Review API. See the plugin README.', detail }
   }
-  if (status === 501 && /disabled/i.test(detail)) return { text: DECISION_TITLE, detail }
   if (status === 409) return { text: 'Hermes could not access this profile’s pending store.', detail }
   if (status === 401 || status === 403) {
+    if (status === 403 && /disabled for this profile/i.test(detail)) return { text: DECISION_TITLE, detail }
     return { text: `Hermes refused this session (HTTP ${status}). Reconnect, then Retry.`, detail }
   }
   if (status === null || status >= 500) return { text: 'Could not reach Hermes.', detail }
@@ -687,7 +687,7 @@ const itemKey = item => `${item.kind}:${item.id}`
 
 // Failures that no later item can avoid: session refused, decisions off, Hermes unreachable. A 409 (store
 // refused) is not here: it can be one kind's store or one record's lock while the next row would go through.
-const BULK_HALT = new Set([null, 401, 403, 501, 502, 503, 504])
+const BULK_HALT = new Set([null, 401, 403, 502, 503, 504])
 const MOVED = 'The list is out of date: Hermes now answers for another profile. Nothing more was rejected.'
 
 // Bulk rejection is the one multi-item action that needs no diff reading: every selected row is previewed

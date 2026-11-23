@@ -1,5 +1,5 @@
 // Use real Radix focus and dismissal handling; a static render cannot exercise either.
-import { checker, deferred, httpError, loadPluginCopy, memoryPreview, setupDom } from './harness.mjs'
+import { checker, decisionsDisabledError, deferred, httpError, loadPluginCopy, memoryPreview, setupDom } from './harness.mjs'
 
 const w = await setupDom()
 const plugin = (await loadPluginCopy('plugin-radix.mjs', { sdk: 'sdk-radix.mjs' })).default
@@ -399,11 +399,11 @@ async function selectAllAndReject(s, n) {
 {
   const s = await mountPane({
     decide: id => (id === 'bbbb0002'
-      ? Promise.reject(httpError(501, '{"detail":"approve/reject are disabled for this profile"}'))
+      ? Promise.reject(decisionsDisabledError())
       : rejectReply(id, 'rejected'))
   })
   await selectAllAndReject(s, 3)
-  check('halt: a 501 stops the run; the third row is never read', s.state.posts.length === 2 && s.state.previews.length === 2,
+  check('halt: a policy 403 stops before the next preview', s.state.posts.length === 2 && s.state.previews.length === 2,
     JSON.stringify(s.state.previews))
   check('halt: the toast keeps the count rejected before stopping', toasts().at(-1)?.kind === 'warning'
     && toasts().at(-1)?.message === 'Decisions are turned off for this profile (read-only). Rejected 1 of 3 before stopping.',

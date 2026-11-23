@@ -122,7 +122,8 @@ def decide_pending(kind: str, pending_id: str, decision: str, body: dict | None 
     _require_kind(kind, allow_all=False)
     _require_id(pending_id)
     if not _decisions_enabled():
-        raise HTTPException(status_code=501, detail="approve/reject are disabled for this profile")
+        # Hermes counts 5xx responses as dashboard faults.
+        raise HTTPException(status_code=403, detail="approve/reject are disabled for this profile")
     expect = (body or {}).get("expect")
     if not isinstance(expect, dict):
         raise HTTPException(status_code=400, detail="Preview this write first and send its expect value.")

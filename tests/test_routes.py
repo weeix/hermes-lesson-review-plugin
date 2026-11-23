@@ -70,7 +70,7 @@ def test_malformed_ids_are_400(client, bad_id):
 @pytest.mark.parametrize("decision", ["approve", "reject"])
 def test_fake_adapter_cannot_decide(client, decision):
     r = client.post(f"{PREFIX}/pending/memory/0a1d0001/{decision}", json={"expect": {}})
-    assert r.status_code == 501
+    assert r.status_code == 403
     assert r.json()["detail"] == "approve/reject are disabled for this profile"
     assert client.get(f"{PREFIX}/pending/memory/0a1d0001").json()["decisions_enabled"] is False
 
@@ -150,7 +150,7 @@ def test_the_profile_setting_turns_decisions_on_or_off(monkeypatch, config, enab
     assert client.get(f"{PREFIX}/pending").json()["decisions_enabled"] is enabled
     assert client.get(f"{PREFIX}/pending/memory/0a1d0001").json()["decisions_enabled"] is enabled
     r = client.post(f"{PREFIX}/pending/memory/0a1d0001/approve", json={"expect": {"profile": "p"}})
-    assert r.status_code == (200 if enabled else 501)
+    assert r.status_code == (200 if enabled else 403)
     if not enabled:
         assert r.json()["detail"] == "approve/reject are disabled for this profile"
         assert probe.calls == []
@@ -158,7 +158,7 @@ def test_the_profile_setting_turns_decisions_on_or_off(monkeypatch, config, enab
 
 def test_an_unreadable_config_turns_decisions_off(monkeypatch):
     client, probe = _core_client(monkeypatch, config_error=ValueError("broken config.yaml"))
-    assert client.post(f"{PREFIX}/pending/memory/0a1d0001/approve", json={"expect": {}}).status_code == 501
+    assert client.post(f"{PREFIX}/pending/memory/0a1d0001/approve", json={"expect": {}}).status_code == 403
     assert probe.calls == []
 
 
@@ -166,20 +166,19 @@ def test_an_unreadable_config_turns_decisions_off(monkeypatch):
 def test_the_environment_can_only_turn_decisions_off(monkeypatch, value):
     client, probe = _core_client(monkeypatch, _entry(settings={"allow_decisions": True}))
     monkeypatch.setenv("LESSON_REVIEW_ALLOW_DECISIONS", value)
-    assert client.post(f"{PREFIX}/pending/memory/0a1d0001/approve", json={"expect": {}}).status_code == 501
+    assert client.post(f"{PREFIX}/pending/memory/0a1d0001/approve", json={"expect": {}}).status_code == 403
     assert probe.calls == []
 
 
 def test_the_environment_cannot_turn_decisions_on(monkeypatch):
     client, probe = _core_client(monkeypatch, _entry(settings={"allow_decisions": False}))
     monkeypatch.setenv("LESSON_REVIEW_ALLOW_DECISIONS", "1")
-    assert client.post(f"{PREFIX}/pending/memory/0a1d0001/approve", json={"expect": {}}).status_code == 501
+    assert client.post(f"{PREFIX}/pending/memory/0a1d0001/approve", json={"expect": {}}).status_code == 403
     assert probe.calls == []
 
 
-def test_decision_with_bad_kind_or_id_is_400_not_501(client):
+def test_decision_does_not_accept_the_all_kind(client):
     assert client.post(f"{PREFIX}/pending/all/0a1d0001/approve").status_code == 400
-    assert client.post(f"{PREFIX}/pending/skills/0a1d000/approve").status_code == 400
 
 
 def test_bad_input_never_reaches_the_adapter(monkeypatch):

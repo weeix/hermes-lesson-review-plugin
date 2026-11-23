@@ -245,7 +245,7 @@ def test_a_read_only_profile_cannot_decide_while_another_can(tmp_path):
     assert results["alpha_before"]["body"]["decisions_enabled"] is True
     assert results["beta_before"]["body"]["decisions_enabled"] is False
     for name in ("beta_approve", "beta_reject"):
-        assert results[name]["status"] == 501
+        assert results[name]["status"] == 403
         assert results[name]["body"]["detail"] == "approve/reject are disabled for this profile"
     assert results["alpha_approve"]["status"] == 200 and results["alpha_approve"]["body"]["status"] == "applied"
     assert _ids(results["beta_after"]["body"]) == [COLLIDING_ID]  # beta's write is still pending

@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { httpError, loadPluginCopy } from './harness.mjs'
+import { decisionsDisabledError, httpError, loadPluginCopy } from './harness.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const BASE = process.env.WR_BASE || 'http://127.0.0.1:9431'
@@ -328,10 +328,13 @@ const dimmed = (html, label) => /opacity:0\.45;cursor:not-allowed/.test(buttonTa
   check('conflict: stays open (no close, no toast)', conflict.close === false && conflict.toast === undefined)
 }
 {
-  // The profile turned decisions off after the preview loaded: the route answers 501.
-  const off = decisionOutcome('memory', null, httpError(501, '{"detail":"approve/reject are disabled for this profile"}'))
-  check('501 from the decision route: says decisions are off, stays open, Preview again',
+  // Decisions were disabled after the preview loaded.
+  const off = decisionOutcome('memory', null, decisionsDisabledError())
+  check('policy 403: says decisions are off and requires a fresh preview',
     off.notice?.text === DECISION_TEXT && off.close === false && off.stale === true, JSON.stringify(off.notice))
+  const session403 = decisionOutcome('memory', null, httpError(403, 'Forbidden'))
+  check('generic 403: asks the user to reconnect',
+    session403.notice?.text === 'Hermes refused this session (HTTP 403). Reconnect, then Retry.', JSON.stringify(session403.notice))
 }
 {
   const needsReview = decisionOutcome('memory', { status: 'needs_review', reason: 'Interrupted during the write.' })

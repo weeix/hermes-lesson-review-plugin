@@ -67,6 +67,8 @@ export function httpError(status, body) {
   return Object.assign(new Error(`${status}: ${body}`), { statusCode: status })
 }
 
+export const decisionsDisabledError = () => httpError(403, '{"detail":"approve/reject are disabled for this profile"}')
+
 // A ready memory preview whose content and expect hash carry `sha`, so a test can tell versions apart.
 export const memoryPreview = (id, sha = id) => ({
   kind: 'memory', id, origin: 'foreground', action: 'add', status: 'ready', reason: null,
