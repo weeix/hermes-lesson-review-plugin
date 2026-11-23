@@ -147,19 +147,19 @@ def _fixture_writes(now: float) -> list[dict[str, Any]]:
         write("memory", "0a1d0004", "batch", 600, "background_review",
               [mem("replace", "CI is per-head.", "ci per HEAD.", "RULE B: ci per HEAD."),
                mem("remove", old_text="Old Slack webhook URL", matched_entry="Old Slack webhook URL")]),
-        write("skills", "5c1e0001", "create", 3000, "foreground", [skill(
-            "create", "deploy-runbook", "SKILL.md",
-            "--- a/SKILL.md\n+++ b/SKILL.md\n@@ -0,0 +1,4 @@\n+---\n+name: deploy-runbook\n"
-            "+description: Use when shipping a release to staging or prod.\n+---")]),
+        write("skills", "5c1e0001", "create", 3000, "foreground", [dict(skill("create", "deploy-runbook"),
+            content="---\nname: deploy-runbook\ndescription: Use when shipping a release to staging or prod.\n"
+                    "---\n\nVerify the staging deployment before promoting to production.\n")]),
         write("skills", "5c1e0002", "patch", 900, "background_review", [skill(
             "patch", "git-review", "SKILL.md",
             "--- a/SKILL.md\n+++ b/SKILL.md\n@@ -3 +3 @@\n-Squash before merge.\n+Never squash; keep history.")]),
         write("skills", "5c1e0003", "delete", 300, "foreground", [skill("delete", "old-cron-helper")]),
         write("skills", "5c1e0004", "batch", 120, "background_review", [
-            skill("create", "release-notes", "SKILL.md",
-                  "--- a/SKILL.md\n+++ b/SKILL.md\n@@ -0,0 +1,3 @@\n+---\n+name: release-notes\n+---"),
+            dict(skill("create", "release-notes"),
+                 content="---\nname: release-notes\ndescription: Use when drafting release notes.\n"
+                         "---\n\nSummarize changes.\n"),
             skill("patch", "release-notes", "SKILL.md",
-                  "--- before\n+++ after\n@@ -1,3 +1,5 @@\n ---\n name: release-notes\n ---\n+\n+Use tags."),
+                  "--- a/SKILL.md\n+++ b/SKILL.md\n@@ -4,3 +4,5 @@\n ---\n \n Summarize changes.\n+\n+Use tags.\n"),
             skill("write_file", "release-notes", "templates/entry.md",
                   "--- a/templates/entry.md\n+++ b/templates/entry.md\n@@ -0,0 +1,2 @@\n+## {version}\n+- {changes}"),
         ]),

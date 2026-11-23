@@ -133,6 +133,10 @@ const OFF_TEXT = 'Lesson review is turned off on this Hermes. Turn it on in Capa
     === JSON.stringify(all.items.map(i => `${i.kind}:${i.id}`)))
   check('batch row labelled', /batch of \d+/.test(paneHtml))
   check('dialog: batch view shows op breakdown', /op 2 · patch/.test(paneHtml) && /op 3 · write_file/.test(paneHtml))
+  const create = live.batchPreview.ops[0]
+  const content = create.fields.content
+  check('dialog: create renders the full SKILL.md as plain text',
+    create.diff === null && content && paneHtml.includes(`>${renderToStaticMarkup(content)}</div>`))
   const patchDiff = live.batchPreview.ops[1].diff
   check('dialog: the patch op shows its diff text', typeof patchDiff === 'string'
     && patchDiff.split('\n').filter(line => /^[+-][^+-]/.test(line)).every(line => text(paneHtml).includes(line.trim())), JSON.stringify(patchDiff))
