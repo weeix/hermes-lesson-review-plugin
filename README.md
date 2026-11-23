@@ -3,8 +3,8 @@
 Review staged memory and skill writes in Hermes Desktop. The pane lists metadata only; open a write to see the full proposal and any diffs before approving or rejecting it.
 
 > [!IMPORTANT]
-> **This plugin does not work on an unpatched Hermes release that lacks the Write Review API.**
-> Wait for [Hermes Agent PR #158550](https://github.com/NousResearch/hermes-agent/pull/158550), or an alternative PR that provides the same `tools.write_review_api`, to be **merged and included in a Hermes release**. Upgrade the backend to that release before installing the plugin. To use it sooner, patch your own Hermes Agent checkout with the PR (or a compatible equivalent) and run your backend from that checkout. Updating Desktop alone is not enough.
+> **The Hermes backend must provide the Write Review API (`tools.write_review_api`).**
+> Use a Hermes release with this API, or run the backend from a checkout patched with [Hermes Agent PR #158550](https://github.com/NousResearch/hermes-agent/pull/158550) or an equivalent patch. Updating Desktop alone is not enough.
 
 <p>
   <a href="docs/screenshots/pane.png"><img src="docs/screenshots/pane.png" width="49%" alt="Lesson review pane showing pending writes and an interrupted approval"></a>
@@ -19,7 +19,7 @@ On the Hermes backend that Desktop connects to, install and enable the plugin:
 hermes plugins install weeix/hermes-lesson-review-plugin --enable
 ```
 
-Restart that backend (`hermes gateway restart` if managed as a gateway service). Then enable `lesson-review` in Desktop under **Capabilities → Plugins**. The desktop pane is opt-in even when the backend plugin is enabled. The Webapp can also show the pane when hosted by a compatible backend.
+Restart that backend (`hermes gateway restart` if managed as a gateway service). Then enable `lesson-review` in Desktop under **Capabilities → Plugins**. The Webapp can also show the pane when hosted by a compatible backend.
 
 Set `memory.write_approval` or `skills.write_approval` to `true` in the profile whose pending writes you want to review. These settings control what gets staged; turning them off does not clear the queue.
 
