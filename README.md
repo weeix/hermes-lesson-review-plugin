@@ -6,7 +6,10 @@ Review staged memory and skill writes in Hermes Desktop. The pane lists metadata
 > **This plugin does not work on an unpatched Hermes release that lacks the Write Review API.**
 > Wait for [Hermes Agent PR #158550](https://github.com/NousResearch/hermes-agent/pull/158550), or an alternative PR that provides the same `tools.write_review_api`, to be **merged and included in a Hermes release**. Upgrade the backend to that release before installing the plugin. To use it sooner, patch your own Hermes Agent checkout with the PR (or a compatible equivalent) and run your backend from that checkout. Updating Desktop alone is not enough.
 
-![Lesson review pane showing pending writes and an interrupted approval](docs/screenshots/pane.png)
+<p>
+  <a href="docs/screenshots/pane.png"><img src="docs/screenshots/pane.png" width="49%" alt="Lesson review pane showing pending writes and an interrupted approval"></a>
+  <a href="docs/screenshots/review-dialog.png"><img src="docs/screenshots/review-dialog.png" width="49%" alt="Review dialog showing a staged skill edit with a diff"></a>
+</p>
 
 ## Install
 
@@ -19,8 +22,6 @@ hermes plugins install weeix/hermes-write-review-plugin --enable
 Restart that backend (`hermes gateway restart` if managed as a gateway service). Then enable `lesson-review` in Desktop under **Capabilities → Plugins**. The desktop pane is opt-in even when the backend plugin is enabled. The Webapp can also show the pane when hosted by a compatible backend.
 
 Set `memory.write_approval` or `skills.write_approval` to `true` in the profile whose pending writes you want to review. These settings control what gets staged; turning them off does not clear the queue.
-
-![Review dialog showing a staged skill edit with a diff](docs/screenshots/review-dialog.png)
 
 ## Read-only review
 
