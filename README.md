@@ -19,7 +19,7 @@ On the Hermes backend that Desktop connects to, install and enable the plugin:
 hermes plugins install weeix/hermes-lesson-review-plugin --enable
 ```
 
-Restart that backend (`hermes gateway restart` if managed as a gateway service). Then enable `lesson-review` in Desktop under **Capabilities → Plugins**. The Webapp can also show the pane when hosted by a compatible backend.
+Restart that backend (`hermes gateway restart` if managed as a gateway service). Then enable `lesson-review` in Desktop under **Capabilities → Plugins**. The pane appears as a tab next to File Browser in the right sidebar. The Webapp can also show the pane when hosted by a compatible backend.
 
 Set `memory.write_approval` or `skills.write_approval` to `true` in the profile whose pending writes you want to review. These settings control what gets staged; turning them off does not clear the queue.
 

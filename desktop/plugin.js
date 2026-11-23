@@ -1103,7 +1103,7 @@ export default {
       id: 'pane',
       area: PANES_AREA,
       title: 'Lesson review',
-      data: { placement: 'right', width: '320px' },
+      data: { placement: 'right', width: '320px', dock: { pane: 'files', pos: 'center' } },
       render: () => jsx(PendingPane, { ctx })
     })
     ctx.register({

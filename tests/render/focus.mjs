@@ -31,7 +31,7 @@ const applied = id => ({ id, subsystem: 'memory', status: 'applied' })
 // `sessionId`, `sessionProfile` and `draft` describe the focused chat for the composer stub (sdk-stub.mjs).
 async function mountPane({ decide = applied, items = ITEMS, listError = null, decisionsEnabled = true, previewOf = null,
   needsReview = NO_REVIEW, sessionId = null, storedSessionId = null, sessionProfile = undefined, sessionOwner = undefined, draft = '', setDraftOk = true,
-  withBadge = false } = {}) {
+  withBadge = false, withPane = true } = {}) {
   globalThis.__WR_PROFILE__ = 'default'
   globalThis.__WR_ACTIVATION__ = 1
   globalThis.__WR_CONNECTION__ = 'local'
@@ -79,7 +79,7 @@ async function mountPane({ decide = applied, items = ITEMS, listError = null, de
   document.body.appendChild(host)
   const root = createRoot(host)
   const badge = contributions.find(c => c.id === 'badge')
-  const tree = () => (withBadge ? React.createElement(React.Fragment, null, pane.render(), badge.render()) : pane.render())
+  const tree = () => React.createElement(React.Fragment, null, withPane ? pane.render() : null, withBadge ? badge.render() : null)
   const render = () => act(async () => { root.render(React.createElement(QueryClientProvider, { client }, tree())) })
   await render()
   await settle()
@@ -790,6 +790,25 @@ globalThis.__WR_PANE_VISIBLE__ = undefined
   } finally {
     host.revealPane = reveal
   }
+}
+
+// ---- 24. the badge alone, as when Desktop unmounts the pane's background tab: it still polls, and a decision elsewhere updates it ----
+{
+  globalThis.__WR_PANE_VISIBLE__ = false
+  const s = await mountPane({ withBadge: true, withPane: false })
+  const count = () => s.host.querySelector('[data-wr-badge]')?.textContent
+  const interval = s.client.getQueryCache().find({ queryKey: ['lesson-review', 'pending', 'default', 1, 'local', 'all', 1] })
+    ?.observers?.[0]?.options?.refetchInterval
+  check('badge only: its query is set to poll every 60 s', !rows(s.host).length && interval === 60000, String(interval))
+  const before = count()
+  s.state.items = s.state.items.slice(1)
+  await act(async () => { for (const fn of globalThis.__WR_LISTENERS__.get('plugin.lesson-review.pending.changed') || []) fn({ payload: {} }) })
+  await act(async () => { await new Promise(r => setTimeout(r, 400)) })
+  await settle()
+  check('badge only: a decision elsewhere updates the count', before === 'pending writes: 3' && count() === 'pending writes: 2',
+    `${before} -> ${count()}`)
+  await act(async () => s.root.unmount())
+  globalThis.__WR_PANE_VISIBLE__ = undefined
 }
 
 finish()

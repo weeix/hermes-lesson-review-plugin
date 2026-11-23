@@ -106,7 +106,9 @@ const OFF_TEXT = 'Lesson review is turned off on this Hermes. Turn it on in Capa
 // ---- 4. scenario: live data, one record open in the review dialog ----
 {
   const contributions = register(plugin)
-  check('register: pane contribution in panes area', Boolean(contributions.find(c => c.area === 'panes')))
+  const pane = contributions.find(c => c.area === 'panes')
+  check('register: pane asks to dock as a tab in the File Browser zone',
+    JSON.stringify(pane?.data?.dock) === JSON.stringify({ pane: 'files', pos: 'center' }), JSON.stringify(pane?.data))
   check('register: badge contribution in statusBar.right', Boolean(contributions.find(c => c.area === 'statusBar.right')))
   const keybinds = contributions.filter(c => c.area === 'keybinds').map(c => c.data)
   const palette = contributions.filter(c => c.area === 'palette').map(c => c.data)
