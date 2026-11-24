@@ -128,7 +128,6 @@ function CopyIcon({ status }) {
   })
 }
 
-// `icon`: a bare copy icon whose accessible name carries the label and the outcome.
 function CopyChip({ ctx, text, label, title, kind, icon = false }) {
   const [status, setStatus] = useState('idle')
   const timer = useRef(0)
