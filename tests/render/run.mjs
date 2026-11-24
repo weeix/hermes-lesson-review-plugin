@@ -466,6 +466,30 @@ for (const [name, outcome, toast] of TOASTS) {
   check('needs review: a failed read shows no banner from earlier data', bannerOf(renderScenario(failedRead).paneHtml) === '')
 }
 
+// ---- 9. copy buttons, and diff text set to be selectable ----
+{
+  const { paneHtml } = renderScenario(okQueries(), { kind: 'skills', id: batch.id, created_at: batch.created_at })
+  const rowsHtml = [...paneHtml.matchAll(/<button[^>]*data-wr-row="[^:"]+:([^"]+)"[^>]*>([\s\S]*?)<\/button>/g)]
+  check('pane rows: each row shows its pending id and nests no button',
+    rowsHtml.length > 0 && rowsHtml.every(([, id, inner]) => inner.includes(`>${id}</span>`) && !inner.includes('<button')))
+  const preTags = [...inDialog(paneHtml).matchAll(/<pre[^>]*>/g)].map(m => m[0])
+  check('dialog: every <pre> block (fields and diffs) sets user-select: text',
+    preTags.length > 0 && preTags.every(tag => tag.includes('user-select:text')))
+
+  const previewFailure = error => inDialog(renderScenario(new Map([...okQueries().entries(), [singleKey, { error }]]),
+    { kind: 'memory', id: memSingle.id }).paneHtml)
+  const gone = previewFailure(httpError(404, '{"detail":"no such pending write"}'))
+  check('dialog 404 (gone): no Copy error button', gone.includes('no longer pending') && buttonTag(gone, 'Copy error') === '')
+  const failed = previewFailure(httpError(409, '{"detail":"store refused RAW-ERROR-BODY"}'))
+  check('dialog preview failure: Copy error shown, raw detail stays out of the visible text',
+    buttonTag(failed, 'Copy error') !== '' && !text(failed).includes(RAW_MARK))
+
+  const errNotice = footer(READY, { ...IDLE, stale: true, notice: { tone: 'error', text: 'Store busy.', detail: '409: RAW' } })
+  const warnNotice = footer(READY, { ...IDLE, settled: true, notice: { tone: 'warning', text: 'Stopped partway.' } })
+  check('notice copy chip: Copy error for errors, Copy notice for warnings',
+    buttonTag(errNotice, 'Copy error') !== '' && buttonTag(warnNotice, 'Copy notice') !== '')
+}
+
 for (const [status, name, extra] of checks) console.log(`${status}  ${name}${extra ? '  -- ' + extra.slice(0, 120) : ''}`)
 const failed = checks.filter(c => c[0] === 'FAIL').length
 console.log(`\n${checks.length} checks, ${checks.length - failed} passed, ${failed} failed`)

@@ -33,6 +33,7 @@ const MUTED = { color: 'var(--ui-text-tertiary)' }
 const BORDER = { border: '1px solid var(--ui-stroke-secondary)' }
 const RULE = { borderTop: '1px solid var(--ui-stroke-secondary)' }
 const MONO = { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }
+const SELECTABLE = { userSelect: 'text', WebkitUserSelect: 'text', cursor: 'text' }
 const CHIP = 'inline-flex items-center rounded px-1.5 py-px text-[0.6875rem] leading-4'
 // The plugin cannot rely on utility classes the host did not compile.
 const DIALOG_SIZE = { width: 'min(860px, calc(100vw - 2rem))', maxWidth: 'calc(100vw - 2rem)', maxHeight: '80vh' }
@@ -69,7 +70,7 @@ function retryOnce(failureCount, error) {
 
 const OFF_TEXT = 'Lesson review is turned off on this Hermes. Turn it on in Capabilities → Plugins.'
 
-// What a failed read means, in words a user can act on. `detail` is the raw text, for a tooltip only;
+// What a failed read means, in words a user can act on. `detail` is the raw text, for a tooltip and Copy error;
 // `gone`: a 404 other than the plugin being off (for a preview, the record is gone).
 function describeFailure(error) {
   const status = httpStatus(error)
@@ -97,6 +98,38 @@ function Gates({ gates }) {
   return jsx('div', { className: 'text-[0.6875rem]', style: MUTED, children: `write_approval: ${parts.join(' · ')}` })
 }
 
+const COPIED_RESET_MS = 1500
+
+function writeClipboard(ctx, text) {
+  if (typeof ctx.os?.writeClipboard !== 'function') return Promise.resolve(false)
+  return ctx.os.writeClipboard(text).then(ok => ok === true)
+}
+
+const formatErrorCopy = ({ text, detail }) => (detail ? `${text}\n\n${detail}` : text)
+
+function CopyChip({ ctx, text, label, title, kind }) {
+  const [status, setStatus] = useState('idle')
+  const timer = useRef(0)
+
+  async function onClick() {
+    const ok = await writeClipboard(ctx, text)
+    clearTimeout(timer.current)
+    setStatus(ok ? 'copied' : 'failed')
+    timer.current = setTimeout(() => setStatus('idle'), COPIED_RESET_MS)
+  }
+
+  const color = { copied: 'var(--ui-accent)', failed: NOTICE_COLOR.error }[status]
+  return jsx('button', {
+    type: 'button',
+    'data-wr-copy': kind,
+    title: title || label,
+    onClick,
+    className: `${CHIP} hover:opacity-80`,
+    style: { ...BORDER, ...MUTED, ...(color && { color }), background: 'transparent', cursor: 'pointer' },
+    children: status === 'copied' ? 'Copied' : status === 'failed' ? 'Failed' : label
+  })
+}
+
 // Pad individual lines so a diff line's background can reach the box edge.
 function LabelledPre({ name, lines }) {
   return jsxs('div', {
@@ -105,7 +138,7 @@ function LabelledPre({ name, lines }) {
       jsx('div', { className: 'text-[0.6875rem]', style: MUTED, children: name }),
       jsx('pre', {
         className: 'whitespace-pre-wrap break-words rounded py-1.5 text-[0.75rem]',
-        style: { ...MONO, ...BORDER, margin: 0, maxHeight: '11rem', overflow: 'auto' },
+        style: { ...MONO, ...BORDER, ...SELECTABLE, margin: 0, maxHeight: '11rem', overflow: 'auto' },
         children: lines
       })
     ]
@@ -258,7 +291,7 @@ const tintedBox = tone => ({
   background: `color-mix(in srgb, ${NOTICE_COLOR[tone]} 12%, transparent)`,
   color: 'var(--ui-text-primary)'
 })
-function Notice({ notice }) {
+function Notice({ ctx, notice }) {
   const warning = notice.tone === 'warning'
   return jsxs('div', {
     role: warning ? 'status' : 'alert',
@@ -266,20 +299,26 @@ function Notice({ notice }) {
     className: 'flex flex-col gap-0.5 rounded p-2 text-[0.8125rem]',
     style: tintedBox(notice.tone),
     children: [
-      jsx('div', { className: 'font-semibold', children: warning ? 'Needs review' : 'Not decided' }),
-      jsx('div', { children: notice.text })
+      jsxs('div', {
+        className: 'flex items-center justify-between gap-2',
+        children: [
+          jsx('div', { className: 'font-semibold', children: warning ? 'Needs review' : 'Not decided' }),
+          jsx(CopyChip, { ctx, text: formatErrorCopy(notice), label: warning ? 'Copy notice' : 'Copy error', kind: 'notice' })
+        ]
+      }),
+      jsx('div', { style: SELECTABLE, children: notice.text })
     ]
   })
 }
 
 
-function ReviewFooter({ rec, decision, retry, onApprove, onReject, onClose, onPreviewAgain }) {
+function ReviewFooter({ ctx, rec, decision, retry, onApprove, onReject, onClose, onPreviewAgain }) {
   const gate = rec ? decisionGate(rec, decision) : null
   return jsxs('div', {
     className: 'flex flex-col gap-2 px-4 py-3',
     style: RULE,
     children: [
-      decision.notice ? jsx(Notice, { notice: decision.notice }) : null,
+      decision.notice ? jsx(Notice, { ctx, notice: decision.notice }) : null,
       rec && !rec.decisions_enabled ? jsx('div', { className: 'text-[0.6875rem]', style: MUTED, children: DECISION_TITLE }) : null,
       decision.refreshing ? jsx('div', { role: 'status', className: 'text-[0.6875rem]', style: MUTED, children: 'Loading the latest preview…' }) : null,
       jsxs('div', {
@@ -300,7 +339,7 @@ function ReviewFooter({ rec, decision, retry, onApprove, onReject, onClose, onPr
   })
 }
 
-function ReviewBody({ rec, fallbackCreatedAt }) {
+function ReviewBody({ ctx, rec, fallbackCreatedAt }) {
   const age = ago(rec.created_at ?? fallbackCreatedAt)
   return jsxs('div', {
     className: 'flex flex-col gap-2',
@@ -311,12 +350,13 @@ function ReviewBody({ rec, fallbackCreatedAt }) {
           jsx(Chip, { children: rec.kind }),
           jsx(Chip, { children: rec.origin }),
           jsx(Chip, { children: rec.is_batch ? `batch · ${rec.op_count} ops` : rec.action }),
-          jsx('span', { className: 'text-[0.6875rem]', style: MUTED, children: age ? `${rec.id} · ${age}` : rec.id })
+          jsx('span', { className: 'text-[0.6875rem]', style: { ...MONO, ...MUTED, ...SELECTABLE }, children: age ? `${rec.id} · ${age}` : rec.id }),
+          jsx(CopyChip, { ctx, text: rec.id, label: 'Copy ID', title: 'Copy pending ID (⌘/Ctrl+Shift+C)', kind: 'id' })
         ]
       }),
-      rec.summary ? jsx('div', { className: 'text-[0.75rem]', children: rec.summary }) : null,
-      rec.reason ? jsx('div', { className: 'text-[0.75rem]', children: rec.reason }) : null,
-      rec.notice ? jsx('div', { className: 'text-[0.75rem]', children: rec.notice }) : null,
+      rec.summary ? jsx('div', { className: 'text-[0.75rem]', style: SELECTABLE, children: rec.summary }) : null,
+      rec.reason ? jsx('div', { className: 'text-[0.75rem]', style: SELECTABLE, children: rec.reason }) : null,
+      rec.notice ? jsx('div', { className: 'text-[0.75rem]', style: SELECTABLE, children: rec.notice }) : null,
       ...rec.ops.map(op => jsx(OpView, { op }, op.index))
     ].filter(Boolean)
   })
@@ -393,20 +433,37 @@ function ReviewDialog({ ctx, profile, activation, connectionId, selected, refres
     body = jsx('div', { className: 'text-[0.75rem]', style: MUTED, children: 'Loading record…' })
   } else if (preview.isError) {
     const failed = describeFailure(preview.error)
-    body = jsx('div', {
-      className: 'text-[0.75rem]',
-      title: failed.detail,
-      children: failed.gone ? 'That record is no longer pending. Pick another item.' : failed.text
-    })
+    body = failed.gone
+      ? jsx('div', {
+        className: 'text-[0.75rem]',
+        title: failed.detail,
+        children: 'That record is no longer pending. Pick another item.'
+      })
+      : jsxs('div', {
+        className: 'flex flex-col items-start gap-2 text-[0.75rem]',
+        children: [
+          jsx('div', { title: failed.detail, style: SELECTABLE, children: failed.text }),
+          jsx(CopyChip, { ctx, text: formatErrorCopy(failed), label: 'Copy error', kind: 'error' })
+        ]
+      })
   } else {
-    body = jsx(ReviewBody, { rec: preview.data, fallbackCreatedAt: selected.created_at })
+    body = jsx(ReviewBody, { ctx, rec: preview.data, fallbackCreatedAt: selected.created_at })
   }
 
   // A chord still held from opening the row must not approve once the preview lands.
   // No ⌘/Ctrl+R for Preview again: Desktop's main process claims that chord before the page sees it.
+  // Plain ⌘/Ctrl+C stays native, so selected diff text copies.
   function onDialogKeyDown(event) {
-    if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return
+    if (!(event.metaKey || event.ctrlKey) || event.altKey) return
     if (event.defaultPrevented || event.nativeEvent?.isComposing || isEditable(event.target)) return
+    if (event.shiftKey) {
+      if (event.key.toLowerCase() !== 'c' || event.repeat || window.getSelection()?.toString()) return
+      event.preventDefault()
+      writeClipboard(ctx, selected.id).then(ok => {
+        if (sameConnection()) host.notify(ok ? { kind: 'info', message: 'Copied pending ID.' } : { kind: 'warning', message: 'Could not copy the pending ID.' })
+      })
+      return
+    }
     const verb = event.key === 'Enter' ? 'approve' : event.key === 'Backspace' ? 'reject' : null
     if (!verb) return
     event.preventDefault()
@@ -427,6 +484,7 @@ function ReviewDialog({ ctx, profile, activation, connectionId, selected, refres
         restoreFocus(decided.current)
       },
       chrome: jsx(ReviewFooter, {
+        ctx,
         rec,
         decision: view,
         retry,
@@ -897,8 +955,14 @@ function ScopedPane({ ctx, profile, activation, connectionId }) {
     body = jsxs('div', {
       className: 'flex flex-col items-start gap-2 text-[0.75rem]',
       children: [
-        jsx('div', { title: failed.detail, children: failed.text }),
-        jsx(Button, { onClick: () => list.refetch(), children: 'Retry' })
+        jsx('div', { title: failed.detail, style: SELECTABLE, children: failed.text }),
+        jsxs('div', {
+          className: 'flex flex-wrap items-center gap-1.5',
+          children: [
+            jsx(Button, { onClick: () => list.refetch(), children: 'Retry' }),
+            jsx(CopyChip, { ctx, text: formatErrorCopy(failed), label: 'Copy error', kind: 'error' })
+          ]
+        })
       ]
     })
   } else if (list.isPending) {
@@ -964,10 +1028,13 @@ function ScopedPane({ ctx, profile, activation, connectionId }) {
               ].filter(Boolean)
             }),
             jsx('div', { className: 'w-full truncate text-[0.6875rem]', style: MUTED, children: item.summary }),
-            jsx('div', {
-              className: 'text-[0.6875rem]',
+            jsxs('div', {
+              className: 'flex w-full items-center gap-1.5 text-[0.6875rem]',
               style: MUTED,
-              children: `${item.origin}${item.is_batch ? ` · batch of ${item.op_count}` : ''}`
+              children: [
+                jsx('span', { className: 'min-w-0 truncate', children: `${item.origin}${item.is_batch ? ` · batch of ${item.op_count}` : ''}` }),
+                jsx('span', { className: 'ml-auto shrink-0', style: MONO, children: item.id })
+              ]
             })
           ]
         }, key)

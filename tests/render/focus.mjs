@@ -29,7 +29,8 @@ const applied = id => ({ id, subsystem: 'memory', status: 'applied' })
 // `state.scope` is the scope the list reports. The QueryClient has Desktop's own defaults
 // (apps/desktop/src/lib/query-client.ts), so react-query's default retries apply unless the plugin overrides them.
 // `sessionId`, `sessionProfile` and `draft` describe the focused chat for the composer stub (sdk-stub.mjs).
-async function mountPane({ decide = applied, items = ITEMS, listError = null, decisionsEnabled = true, previewOf = null,
+// `writeClipboard` answers ctx.os.writeClipboard; null = a Desktop without ctx.os.
+async function mountPane({ writeClipboard = async () => true, decide = applied, items = ITEMS, listError = null, decisionsEnabled = true, previewOf = null,
   needsReview = NO_REVIEW, sessionId = null, storedSessionId = null, sessionProfile = undefined, sessionOwner = undefined, draft = '', setDraftOk = true,
   withBadge = false, withPane = true } = {}) {
   globalThis.__WR_PROFILE__ = 'default'
@@ -46,8 +47,9 @@ async function mountPane({ decide = applied, items = ITEMS, listError = null, de
   globalThis.__WR_LISTENERS__ = new Map()
   globalThis.__WR_TOASTS__ = []
   globalThis.__WR_REVEALS__ = []
-  const state = { items: [...items], posts: [], postBodies: [], previews: [], listReads: 0, listError, scope: 'default', listPaths: [] }
+  const state = { items: [...items], posts: [], postBodies: [], previews: [], listReads: 0, listError, scope: 'default', listPaths: [], copies: [] }
   const ctx = {
+    os: writeClipboard ? { writeClipboard: text => { state.copies.push(text); return writeClipboard(text) } } : undefined,
     rest(path, init) {
       if (init?.method === 'POST') {
         state.posts.push(path)
@@ -809,6 +811,87 @@ globalThis.__WR_PANE_VISIBLE__ = undefined
     `${before} -> ${count()}`)
   await act(async () => s.root.unmount())
   globalThis.__WR_PANE_VISIBLE__ = undefined
+}
+
+// ---- 25. copy: ID and error chips, Mod+Shift+C in the review, and native copy of a selection ----
+async function keydown(el, key, mods = {}) {
+  const event = new w.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...mods })
+  await act(async () => { el.dispatchEvent(event) })
+  await settle()
+  return event
+}
+const chip = kind => document.querySelector(`[data-wr-copy="${kind}"]`)
+const said = () => toasts().map(t => `${t.kind}:${t.message}`)
+{
+  const s = await mountPane()
+  await openRow(rows(s.host)[1])
+  const copyId = chip('id')
+  await clickEl(copyId)
+  check('Copy ID writes the pending id and says Copied', s.state.copies.at(-1) === 'bbbb0002' && copyId.textContent === 'Copied',
+    `${s.state.copies.at(-1)} / ${copyId.textContent}`)
+  await act(async () => { await new Promise(r => setTimeout(r, 1600)) })
+  check('Copy ID: the label comes back after a moment', copyId.textContent === 'Copy ID', copyId.textContent)
+
+  const plain = await keydown(dialog(), 'c', { metaKey: true })
+  check('review: plain Cmd+C is left to the browser', !plain.defaultPrevented && s.state.copies.length === 1)
+  const chord = await keydown(dialog(), 'C', { ctrlKey: true, shiftKey: true })
+  check('review: Ctrl+Shift+C copies the pending id and says so',
+    chord.defaultPrevented && s.state.copies.at(-1) === 'bbbb0002' && said().at(-1) === 'info:Copied pending ID.', said().join())
+  await keydown(dialog(), 'C', { ctrlKey: true, shiftKey: true, repeat: true })
+  check('review: an auto-repeated Ctrl+Shift+C copies nothing more', s.state.copies.length === 2)
+  await keydown(dialog(), 'Enter', { ctrlKey: true, shiftKey: true })
+  check('review: Ctrl+Shift+Enter decides nothing', s.state.posts.length === 0 && Boolean(dialog()))
+
+  const pre = dialog().querySelector('pre')
+  const range = document.createRange()
+  range.selectNodeContents(pre)
+  w.getSelection().removeAllRanges()
+  w.getSelection().addRange(range)
+  const withSelection = await keydown(dialog(), 'C', { ctrlKey: true, shiftKey: true })
+  check('review: with diff text selected, Ctrl+Shift+C is left to the browser',
+    !withSelection.defaultPrevented && s.state.copies.length === 2)
+  w.getSelection().removeAllRanges()
+  await act(async () => s.root.unmount())
+}
+{
+  for (const [name, writeClipboard] of [['clipboard refused', async () => false], ['no ctx.os', null]]) {
+    const s = await mountPane({ writeClipboard })
+    await openRow(rows(s.host)[0])
+    await clickEl(chip('id'))
+    await keydown(dialog(), 'c', { ctrlKey: true, shiftKey: true })
+    check(`${name}: Copy ID says Failed and Ctrl+Shift+C warns`,
+      chip('id').textContent === 'Failed' && said().join() === 'warning:Could not copy the pending ID.', `${chip('id').textContent} ${said()}`)
+    await act(async () => s.root.unmount())
+  }
+}
+{
+  const write = deferred()
+  const s = await mountPane({ writeClipboard: () => write.promise })
+  await openRow(rows(s.host)[0])
+  await keydown(dialog(), 'C', { ctrlKey: true, shiftKey: true })
+  globalThis.__WR_PROFILE__ = 'other'
+  await act(async () => { write.resolve(true) })
+  await settle()
+  check('Ctrl+Shift+C: a copy that finishes after a profile switch says nothing', s.state.copies.length === 1 && said().length === 0, said().join())
+  await act(async () => s.root.unmount())
+}
+{
+  const locked = httpError(409, '{"detail":"locked"}')
+  const copied = 'Hermes could not access this profile’s pending store.\n\n409: {"detail":"locked"}'
+  for (const [where, options, kind, reach] of [
+    ['list failure', { listError: locked }, 'error', async () => {}],
+    ['preview failure', { previewOf: () => Promise.reject(locked) }, 'error', s => openRow(rows(s.host)[0])],
+    ['failed decision', { decide: () => Promise.reject(locked) }, 'notice', async s => {
+      await openRow(rows(s.host)[0])
+      await clickEl(button('Approve'))
+    }]
+  ]) {
+    const s = await mountPane(options)
+    await reach(s)
+    await clickEl(chip(kind))
+    check(`${where}: Copy error copies the message and the raw detail`, s.state.copies.at(-1) === copied, JSON.stringify(s.state.copies.at(-1)))
+    await act(async () => s.root.unmount())
+  }
 }
 
 finish()
