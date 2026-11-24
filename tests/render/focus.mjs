@@ -827,10 +827,11 @@ const said = () => toasts().map(t => `${t.kind}:${t.message}`)
   await openRow(rows(s.host)[1])
   const copyId = chip('id')
   await clickEl(copyId)
-  check('Copy ID writes the pending id and says Copied', s.state.copies.at(-1) === 'bbbb0002' && copyId.textContent === 'Copied',
-    `${s.state.copies.at(-1)} / ${copyId.textContent}`)
+  const named = el => el.getAttribute('aria-label')
+  check('Copy ID writes the pending id and says Copied', s.state.copies.at(-1) === 'bbbb0002' && named(copyId) === 'Copied',
+    `${s.state.copies.at(-1)} / ${named(copyId)}`)
   await act(async () => { await new Promise(r => setTimeout(r, 1600)) })
-  check('Copy ID: the label comes back after a moment', copyId.textContent === 'Copy ID', copyId.textContent)
+  check('Copy ID: the label comes back after a moment', named(copyId) === 'Copy ID', named(copyId))
 
   const plain = await keydown(dialog(), 'c', { metaKey: true })
   check('review: plain Cmd+C is left to the browser', !plain.defaultPrevented && s.state.copies.length === 1)
@@ -860,7 +861,8 @@ const said = () => toasts().map(t => `${t.kind}:${t.message}`)
     await clickEl(chip('id'))
     await keydown(dialog(), 'c', { ctrlKey: true, shiftKey: true })
     check(`${name}: Copy ID says Failed and Ctrl+Shift+C warns`,
-      chip('id').textContent === 'Failed' && said().join() === 'warning:Could not copy the pending ID.', `${chip('id').textContent} ${said()}`)
+      chip('id').getAttribute('aria-label') === 'Failed' && said().join() === 'warning:Could not copy the pending ID.',
+      `${chip('id').getAttribute('aria-label')} ${said()}`)
     await act(async () => s.root.unmount())
   }
 }

@@ -263,21 +263,23 @@ const dimmed = (html, label) => /opacity:0\.45;cursor:not-allowed/.test(buttonTa
   check('dialog: list stays rendered behind it', rowCount(paneHtml) === all.items.length)
   const dlg = inDialog(paneHtml)
   check('dialog: titled Review pending write', dlg.includes(DIALOG_TITLE))
-  check('dialog: carries the record id, age and per-op preview (no dangling separator)',
-    new RegExp(`${batch.id} · \\d+[smhd] ago`).test(dlg) && !dlg.includes(`${batch.id} · <`) && /op 2 · patch/.test(dlg))
+  check('dialog: carries the record id, age and per-op preview',
+    dlg.includes(`>${batch.id}</span>`) && /<span>· \d+[smhd] ago<\/span>/.test(dlg) && /op 2 · patch/.test(dlg))
   // The record's own time wins; the list row's time fills in when the preview has none (core sends null).
   const idLine = (createdAt, fallbackCreatedAt) => renderToStaticMarkup(ReviewBody({
     rec: { ...live.batchPreview, created_at: createdAt }, fallbackCreatedAt }))
   const now = Date.now() / 1000
   const ownTime = idLine(now - 7200, now - 3 * 86400)
   check('dialog age: the preview\'s created_at is shown, not the row\'s',
-    ownTime.includes(`>${batch.id} · 2h ago</span>`) && !ownTime.includes('3d ago'))
+    ownTime.includes('>· 2h ago</span>') && !ownTime.includes('3d ago'))
+  check('dialog id line: the id, then the Copy ID icon, then the age',
+    new RegExp(`>${batch.id}</span><button[^>]*data-wr-copy="id"[^>]*aria-label="Copy ID"[^>]*><svg[\\s\\S]*?</svg></button><span>· 2h ago</span>`).test(ownTime))
   for (const missing of [undefined, null]) {
     const fromRow = idLine(missing, now - 3 * 86400)
-    check(`dialog age: created_at ${missing} falls back to the list row's time`, fromRow.includes(`>${batch.id} · 3d ago</span>`))
+    check(`dialog age: created_at ${missing} falls back to the list row's time`, fromRow.includes('>· 3d ago</span>'))
     const none = idLine(missing, undefined)
     check(`dialog age: created_at ${missing} and no row time shows the id alone, no separator`,
-      none.includes(`>${batch.id}</span>`) && !none.includes(`${batch.id} ·`))
+      none.includes(`>${batch.id}</span>`) && !none.includes('>· '))
   }
   for (const label of ['Approve', 'Reject', 'Close']) check(`dialog: footer has ${label}`, buttonTag(dlg, label) !== '')
   check('dialog: width and max-width are inline', paneHtml.includes('width:min(860px, calc(100vw - 2rem))') && paneHtml.includes('max-width:calc(100vw - 2rem)'))

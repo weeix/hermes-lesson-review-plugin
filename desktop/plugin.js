@@ -107,7 +107,29 @@ function writeClipboard(ctx, text) {
 
 const formatErrorCopy = ({ text, detail }) => (detail ? `${text}\n\n${detail}` : text)
 
-function CopyChip({ ctx, text, label, title, kind }) {
+const COPY_ICON_PATHS = {
+  idle: ['M5.5 5.5h7a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1z', 'M2.5 10.5v-7a1 1 0 0 1 1-1h7'],
+  copied: ['M3 8.5l3 3 7-7'],
+  failed: ['M4 4l8 8', 'M12 4l-8 8']
+}
+
+function CopyIcon({ status }) {
+  return jsx('svg', {
+    width: 12,
+    height: 12,
+    viewBox: '0 0 16 16',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.5,
+    strokeLinecap: 'round',
+    strokeLinejoin: 'round',
+    'aria-hidden': 'true',
+    children: COPY_ICON_PATHS[status].map(d => jsx('path', { d }, d))
+  })
+}
+
+// `icon`: a bare copy icon whose accessible name carries the label and the outcome.
+function CopyChip({ ctx, text, label, title, kind, icon = false }) {
   const [status, setStatus] = useState('idle')
   const timer = useRef(0)
 
@@ -119,14 +141,16 @@ function CopyChip({ ctx, text, label, title, kind }) {
   }
 
   const color = { copied: 'var(--ui-accent)', failed: NOTICE_COLOR.error }[status]
+  const caption = status === 'copied' ? 'Copied' : status === 'failed' ? 'Failed' : label
   return jsx('button', {
     type: 'button',
     'data-wr-copy': kind,
     title: title || label,
+    'aria-label': icon ? caption : undefined,
     onClick,
-    className: `${CHIP} hover:opacity-80`,
-    style: { ...BORDER, ...MUTED, ...(color && { color }), background: 'transparent', cursor: 'pointer' },
-    children: status === 'copied' ? 'Copied' : status === 'failed' ? 'Failed' : label
+    className: icon ? 'inline-flex items-center rounded p-0.5 hover:opacity-80' : `${CHIP} hover:opacity-80`,
+    style: { ...(!icon && BORDER), ...MUTED, ...(color && { color }), background: 'transparent', cursor: 'pointer' },
+    children: icon ? jsx(CopyIcon, { status }) : caption
   })
 }
 
@@ -350,8 +374,15 @@ function ReviewBody({ ctx, rec, fallbackCreatedAt }) {
           jsx(Chip, { children: rec.kind }),
           jsx(Chip, { children: rec.origin }),
           jsx(Chip, { children: rec.is_batch ? `batch · ${rec.op_count} ops` : rec.action }),
-          jsx('span', { className: 'text-[0.6875rem]', style: { ...MONO, ...MUTED, ...SELECTABLE }, children: age ? `${rec.id} · ${age}` : rec.id }),
-          jsx(CopyChip, { ctx, text: rec.id, label: 'Copy ID', title: 'Copy pending ID (⌘/Ctrl+Shift+C)', kind: 'id' })
+          jsxs('span', {
+            className: 'inline-flex items-center gap-1 text-[0.6875rem]',
+            style: MUTED,
+            children: [
+              jsx('span', { style: { ...MONO, ...SELECTABLE }, children: rec.id }),
+              jsx(CopyChip, { ctx, text: rec.id, label: 'Copy ID', title: 'Copy pending ID (⌘/Ctrl+Shift+C)', kind: 'id', icon: true }),
+              age ? jsx('span', { children: `· ${age}` }) : null
+            ].filter(Boolean)
+          })
         ]
       }),
       rec.summary ? jsx('div', { className: 'text-[0.75rem]', style: SELECTABLE, children: rec.summary }) : null,
