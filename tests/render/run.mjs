@@ -140,15 +140,16 @@ const OFF_TEXT = 'Lesson review is turned off on this Hermes. Turn it on in Capa
   const content = create.fields.content
   check('dialog: create renders the full SKILL.md as plain text',
     create.diff === null && content && paneHtml.includes(`>${renderToStaticMarkup(content)}</div>`))
+  const dom = new JSDOM(paneHtml)
+  const diffLines = [...dom.window.document.querySelectorAll('[data-wr-diff-line]')]
   const patchDiff = live.batchPreview.ops[1].diff
   check('dialog: the patch op shows its diff text', typeof patchDiff === 'string'
-    && patchDiff.split('\n').filter(line => /^[+-][^+-]/.test(line)).every(line => text(paneHtml).includes(line.trim())), JSON.stringify(patchDiff))
-  // Each diff line is its own block; added lines carry the host's diff colours.
-  const diffLines = [...paneHtml.matchAll(/<div data-wr-diff-line="(\w+)" class="px-1\.5"(?: style="([^"]*)")?>([^<]*)<\/div>/g)]
-    .map(([, kind, style = '', line]) => ({ kind, style, line }))
-  const added = diffLines.find(l => l.line === '+Use tags.')
-  check('dialog: an added line is green (the host diff colour)', added?.kind === 'add'
-    && added.style.includes('var(--ui-diff-add-background') && added.style.includes('var(--ui-diff-add-foreground'), JSON.stringify(added))
+    && patchDiff.split('\n').filter(line => /^[+-][^+-]/.test(line)).every(line => diffLines.some(row => row.textContent === line)), JSON.stringify(patchDiff))
+  const added = diffLines.find(row => row.dataset.wrDiffLine === 'add' && row.textContent === '+Use tags.')
+  const addedStyle = added?.getAttribute('style') || ''
+  check('dialog: an added line is green (the host diff colour)',
+    addedStyle.includes('var(--ui-diff-add-background') && addedStyle.includes('var(--ui-diff-add-foreground'))
+  dom.window.close()
   for (const label of ['Approve', 'Reject']) {
     const tag = paneHtml.match(new RegExp(`<button[^>]*>${label}</button>`))?.[0] || ''
     check(`dialog: ${label} has the disabled attribute`, /\sdisabled=""/.test(tag), tag.slice(0, 160))
@@ -292,15 +293,17 @@ const dimmed = (html, label) => /opacity:0\.45;cursor:not-allowed/.test(buttonTa
   const queries = okQueries()
   queries.set(batchKey, { data: { ...live.batchPreview, ops } })
   const { paneHtml } = renderScenario(queries, { kind: 'skills', id: batch.id, created_at: batch.created_at })
-  const kinds = Object.fromEntries([...paneHtml.matchAll(/<div data-wr-diff-line="(\w+)"[^>]*>([^<]*)<\/div>/g)].map(([, kind, line]) => [line, kind]))
+  const dom = new JSDOM(paneHtml)
+  const kinds = Object.fromEntries([...dom.window.document.querySelectorAll('[data-wr-diff-line]')].map(row => [row.textContent, row.dataset.wrDiffLine]))
   check('diff colours: removed lines red, added green, headers muted, context plain',
     kinds['----'] === 'remove' && kinds['-old line'] === 'remove' && kinds['+new line'] === 'add'
     && kinds['--- before'] === 'meta' && kinds['+++ after'] === 'meta' && kinds[' context'] === 'context', JSON.stringify(kinds))
   check('diff colours: removed lines use the host remove colour', paneHtml.includes('var(--ui-diff-remove-foreground'))
+  dom.window.close()
 }
 {
   const longPrefix = `${'a'.repeat(1100)} `
-  const manyWords = 'a '.repeat(70)
+  const manyWords = 'a '.repeat(130)
   const beforeHeader = '--- a/skills/shared-notes-before.txt'
   const afterHeader = '+++ b/skills/shared-notes-after.txt'
   const noNewline = '\\ No newline at end of file'
@@ -311,13 +314,17 @@ const dimmed = (html, label) => /opacity:0\.45;cursor:not-allowed/.test(buttonTa
     '-Keep short notes for 7 days.', '-Send a daily summary.',
     '+Keep brief notes for 30 days.', '+Send a weekly summary.',
     ' context',
-    '-Keep the same rule today.', '+Keep the same rule tomorrow.', '+An extra rule.',
+    '-Keep the same rule today.', '+An extra rule.', '+Keep the same rule tomorrow.',
     ' context',
     '-Go upstairs now.', '+Come downstairs later.',
     '@@ -13 +14 @@', `-${longPrefix}old`, `+${longPrefix}new`,
     '@@ -15 +16 @@', `-${manyWords}old`, `+${manyWords}new`,
     '@@ -16 +17 @@', '-Keep cats dogs', '+Keep dogs cats',
-    '@@ -18 +19,0 @@', '-Retain logs for seven days.',
+    '@@ -17 +18 @@', '-## Visual preview (for the user, not a test)', '+## Inline diffs',
+    '@@ -18 +19 @@', '-A key:value changed', '+A key:value, changed',
+    '@@ -19 +20,0 @@', '-Retain logs for seven days.',
+    '@@ -20 +21,2 @@', '-Use two lines here.', '+Use two', '+lines here.',
+    '@@ -22 +23 @@', '-  keep    these words', '+  keep these  words  ',
     '@@ -24,0 +24 @@', '+Retain logs for thirty days.',
     'diff --git a/skills/shared-notes-before.txt b/skills/shared-notes-after.txt', beforeHeader, afterHeader,
     '@@ -1 +1 @@', '-Second file, old.', noNewline, '+Second file, new.'
@@ -340,19 +347,28 @@ const dimmed = (html, label) => /opacity:0\.45;cursor:not-allowed/.test(buttonTa
       ['-Send a daily summary.', ['daily']], ['+Send a weekly summary.', ['weekly']]
     ]],
     ['a no-newline marker does not interrupt a replacement', [
-      ['-Second file, old.', ['old']], ['+Second file, new.', ['new']]
-    ]]
+      ['-Second file, old.', ['old.']], ['+Second file, new.', ['new.']]
+    ]],
+    ['an entire new heading title leaves its Markdown prefix plain', [
+      ['-## Visual preview (for the user, not a test)', ['Visual preview (for the user, not a test)']],
+      ['+## Inline diffs', ['Inline diffs']]
+    ]],
+    ['punctuation is part of the whitespace-delimited word', [['-A key:value changed', ['key:value']], ['+A key:value, changed', ['key:value,']]]],
+    ['gaps do not prevent later words from matching', [
+      ['-Keep the same rule today.', ['today.']], ['+An extra rule.', ['An extra rule.']], ['+Keep the same rule tomorrow.', ['tomorrow.']]
+    ]],
+    ['no shared words marks the whole replacement text', [['-Go upstairs now.', ['Go upstairs now.']], ['+Come downstairs later.', ['Come downstairs later.']]]],
+    ['reordered words', [['-Keep cats dogs', ['cats']], ['+Keep dogs cats', ['cats']]]],
+    ['unpaired changes in different hunks stay distinct', [['-Retain logs for seven days.', ['Retain logs for seven days.']], ['+Retain logs for thirty days.', ['Retain logs for thirty days.']]]]
   ]) {
     check(`diff word emphasis: ${name}`, lines.every(([line, words]) => rows.has(line)
       && JSON.stringify(highlights(rows.get(line)).map(mark => mark.textContent)) === JSON.stringify(words)))
   }
   for (const [name, lines] of [
-    ['uneven blocks', ['-Keep the same rule today.', '+Keep the same rule tomorrow.', '+An extra rule.']],
-    ['unrelated replacements', ['-Go upstairs now.', '+Come downstairs later.']],
     ['very long lines', [`-${longPrefix}old`, `+${longPrefix}new`]],
     ['lines with many tokens', [`-${manyWords}old`, `+${manyWords}new`]],
-    ['words that swap places', ['-Keep cats dogs', '+Keep dogs cats']],
-    ['changes in different hunks', ['-Retain logs for seven days.', '+Retain logs for thirty days.']]
+    ['soft line breaks between the same words', ['-Use two lines here.', '+Use two', '+lines here.']],
+    ['changes in spacing alone', ['-  keep    these words', '+  keep these  words  ']]
   ]) {
     check(`diff word emphasis: ${name} keep line-only colouring`, lines.every(line => rows.has(line)
       && highlights(rows.get(line)).length === 0))
