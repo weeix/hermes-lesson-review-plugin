@@ -30,9 +30,10 @@ const applied = id => ({ id, subsystem: 'memory', status: 'applied' })
 // (apps/desktop/src/lib/query-client.ts), so react-query's default retries apply unless the plugin overrides them.
 // `sessionId`, `sessionProfile` and `draft` describe the focused chat for the composer stub (sdk-stub.mjs).
 // `writeClipboard` answers ctx.os.writeClipboard; null = a Desktop without ctx.os.
+// `wrap(paneElement)` places the pane inside host markup, e.g. the pane body's context menu.
 async function mountPane({ writeClipboard = async () => true, decide = applied, items = ITEMS, listError = null, decisionsEnabled = true, previewOf = null,
   needsReview = NO_REVIEW, sessionId = null, storedSessionId = null, sessionProfile = undefined, sessionOwner = undefined, draft = '', setDraftOk = true,
-  withBadge = false, withPane = true } = {}) {
+  withBadge = false, withPane = true, wrap = null } = {}) {
   globalThis.__WR_PROFILE__ = 'default'
   globalThis.__WR_ACTIVATION__ = 1
   globalThis.__WR_CONNECTION__ = 'local'
@@ -81,7 +82,8 @@ async function mountPane({ writeClipboard = async () => true, decide = applied, 
   document.body.appendChild(host)
   const root = createRoot(host)
   const badge = contributions.find(c => c.id === 'badge')
-  const tree = () => React.createElement(React.Fragment, null, withPane ? pane.render() : null, withBadge ? badge.render() : null)
+  const paneEl = () => (withPane ? (wrap ? wrap(pane.render()) : pane.render()) : null)
+  const tree = () => React.createElement(React.Fragment, null, paneEl(), withBadge ? badge.render() : null)
   const render = () => act(async () => { root.render(React.createElement(QueryClientProvider, { client }, tree())) })
   await render()
   await settle()
@@ -894,6 +896,52 @@ const said = () => toasts().map(t => `${t.kind}:${t.message}`)
     check(`${where}: Copy error copies the message and the raw detail`, s.state.copies.at(-1) === copied, JSON.stringify(s.state.copies.at(-1)))
     await act(async () => s.root.unmount())
   }
+}
+
+// ---- 26. a touch hold on review text opens no pane menu behind the dialog ----
+// Replica of Desktop's pane body menu trigger (apps/desktop tree-group.tsx ZoneBodyMenu, lib/touch-interaction.ts):
+// a Radix ContextMenu that opens on a 700 ms touch hold unless the touch lands in [data-selectable-text="true"].
+// React events from the portalled dialog reach it. The menu stays closed with no content (Radix's popper needs
+// layout jsdom lacks): `menuOpens` counts the opens Desktop would show.
+const { ContextMenu } = await import('radix-ui')
+let menuOpens = 0
+function PaneBodyMenu({ children }) {
+  const browserOwned = React.useRef(false)
+  const onOpenChange = next => { if (next && !browserOwned.current) menuOpens++ }
+  return React.createElement(ContextMenu.Root, { open: false, onOpenChange },
+    React.createElement(ContextMenu.Trigger, { asChild: true }, React.createElement('div', {
+      onPointerDown: e => { browserOwned.current = e.pointerType !== 'mouse' && Boolean(e.target.closest('[data-selectable-text="true"]')) },
+      children
+    })))
+}
+async function touchHold(el) {
+  const touch = type => Object.defineProperty(new w.MouseEvent(type, { bubbles: true, cancelable: true }), 'pointerType', { value: 'touch' })
+  await act(async () => {
+    el.dispatchEvent(touch('pointerdown'))
+    await new Promise(r => setTimeout(r, 800))
+    el.dispatchEvent(touch('pointerup'))
+  })
+  await settle()
+}
+{
+  const withDiff = id => ({ ...preview(id), summary: 'Memory replace', ops: [{ index: 1, action: 'replace', subject: 'user',
+    fields: { content: 'sample new' }, diff: '--- a/MEMORY.md\n+++ b/MEMORY.md\n@@ -1 +1 @@\n-sample old\n+sample new' }] })
+  const s = await mountPane({ previewOf: withDiff, wrap: el => React.createElement(PaneBodyMenu, null, el) })
+  await touchHold(s.host.querySelector('button'))
+  check('setup: a touch hold on a pane button opens the replica pane menu', menuOpens === 1, String(menuOpens))
+  await openRow(rows(s.host)[0])
+  for (const [name, find] of [
+    ['a diff line', () => dialog().querySelector('[data-wr-diff-line="add"]')],
+    ['a field value', () => [...dialog().querySelectorAll('pre')].find(p => p.textContent === 'sample new')],
+    ['the pending id', () => [...dialog().querySelectorAll('span')].find(el => el.textContent === 'aaaa0001')],
+    ['the summary', () => [...dialog().querySelectorAll('div')].find(el => el.textContent === 'Memory replace')]
+  ]) {
+    const target = find()
+    const before = menuOpens
+    await touchHold(target || dialog())
+    check(`touch hold on ${name}: the pane menu stays shut`, Boolean(target) && menuOpens === before, `${Boolean(target)} ${menuOpens - before}`)
+  }
+  await act(async () => s.root.unmount())
 }
 
 finish()

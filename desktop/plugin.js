@@ -34,6 +34,8 @@ const BORDER = { border: '1px solid var(--ui-stroke-secondary)' }
 const RULE = { borderTop: '1px solid var(--ui-stroke-secondary)' }
 const MONO = { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }
 const SELECTABLE = { userSelect: 'text', WebkitUserSelect: 'text', cursor: 'text' }
+// Marks text that a touch hold should select. Otherwise the hold opens the pane's menu behind the review dialog.
+const SELECTABLE_TEXT = { 'data-selectable-text': 'true' }
 const CHIP = 'inline-flex items-center rounded px-1.5 py-px text-[0.6875rem] leading-4'
 // The plugin cannot rely on utility classes the host did not compile.
 const DIALOG_SIZE = { width: 'min(860px, calc(100vw - 2rem))', maxWidth: 'calc(100vw - 2rem)', maxHeight: '80vh' }
@@ -161,6 +163,7 @@ function LabelledPre({ name, lines }) {
       jsx('div', { className: 'text-[0.6875rem]', style: MUTED, children: name }),
       jsx('pre', {
         className: 'whitespace-pre-wrap break-words rounded py-1.5 text-[0.75rem]',
+        ...SELECTABLE_TEXT,
         style: { ...MONO, ...BORDER, ...SELECTABLE, margin: 0, maxHeight: '11rem', overflow: 'auto' },
         children: lines
       })
@@ -418,7 +421,7 @@ function Notice({ ctx, notice }) {
           jsx(CopyChip, { ctx, text: formatErrorCopy(notice), label: warning ? 'Copy notice' : 'Copy error', kind: 'notice' })
         ]
       }),
-      jsx('div', { style: SELECTABLE, children: notice.text })
+      jsx('div', { ...SELECTABLE_TEXT, style: SELECTABLE, children: notice.text })
     ]
   })
 }
@@ -466,16 +469,16 @@ function ReviewBody({ ctx, rec, fallbackCreatedAt }) {
             className: 'inline-flex items-center gap-1 text-[0.6875rem]',
             style: MUTED,
             children: [
-              jsx('span', { style: { ...MONO, ...SELECTABLE }, children: rec.id }),
+              jsx('span', { ...SELECTABLE_TEXT, style: { ...MONO, ...SELECTABLE }, children: rec.id }),
               jsx(CopyChip, { ctx, text: rec.id, label: 'Copy ID', title: 'Copy pending ID (⌘/Ctrl+Shift+C)', kind: 'id', icon: true }),
               age ? jsx('span', { children: `· ${age}` }) : null
             ].filter(Boolean)
           })
         ]
       }),
-      rec.summary ? jsx('div', { className: 'text-[0.75rem]', style: SELECTABLE, children: rec.summary }) : null,
-      rec.reason ? jsx('div', { className: 'text-[0.75rem]', style: SELECTABLE, children: rec.reason }) : null,
-      rec.notice ? jsx('div', { className: 'text-[0.75rem]', style: SELECTABLE, children: rec.notice }) : null,
+      rec.summary ? jsx('div', { className: 'text-[0.75rem]', ...SELECTABLE_TEXT, style: SELECTABLE, children: rec.summary }) : null,
+      rec.reason ? jsx('div', { className: 'text-[0.75rem]', ...SELECTABLE_TEXT, style: SELECTABLE, children: rec.reason }) : null,
+      rec.notice ? jsx('div', { className: 'text-[0.75rem]', ...SELECTABLE_TEXT, style: SELECTABLE, children: rec.notice }) : null,
       ...rec.ops.map(op => jsx(OpView, { op }, op.index))
     ].filter(Boolean)
   })
@@ -561,7 +564,7 @@ function ReviewDialog({ ctx, profile, activation, connectionId, selected, refres
       : jsxs('div', {
         className: 'flex flex-col items-start gap-2 text-[0.75rem]',
         children: [
-          jsx('div', { title: failed.detail, style: SELECTABLE, children: failed.text }),
+          jsx('div', { title: failed.detail, ...SELECTABLE_TEXT, style: SELECTABLE, children: failed.text }),
           jsx(CopyChip, { ctx, text: formatErrorCopy(failed), label: 'Copy error', kind: 'error' })
         ]
       })
@@ -1074,7 +1077,7 @@ function ScopedPane({ ctx, profile, activation, connectionId }) {
     body = jsxs('div', {
       className: 'flex flex-col items-start gap-2 text-[0.75rem]',
       children: [
-        jsx('div', { title: failed.detail, style: SELECTABLE, children: failed.text }),
+        jsx('div', { title: failed.detail, ...SELECTABLE_TEXT, style: SELECTABLE, children: failed.text }),
         jsxs('div', {
           className: 'flex flex-wrap items-center gap-1.5',
           children: [
