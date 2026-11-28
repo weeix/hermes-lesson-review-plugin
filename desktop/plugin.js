@@ -179,28 +179,117 @@ const DIFF_LINE = {
   remove: { background: 'var(--ui-diff-remove-background, rgba(207, 45, 86, 0.12))', color: 'var(--ui-diff-remove-foreground, #91203c)' },
   meta: MUTED
 }
-// `---`/`+++` are file headers only before the first hunk; inside one, `----` is a removed `---` line.
+const DIFF_WORDS = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'word' }) : null
+
+function replacementWords(before, after) {
+  if (Math.max(before.length, after.length) > 1000) return null
+  const words = [before, after].map(text => [...DIFF_WORDS.segment(text)])
+  const [old, next] = words
+  if (Math.max(old.length, next.length) > 128) return null
+
+  // Longest common subsequence, weighted by text length to favour shared words over repeated spaces.
+  const scores = Array.from({ length: old.length + 1 }, () => new Uint16Array(next.length + 1))
+  for (let i = old.length - 1; i >= 0; i--) {
+    const { segment } = old[i]
+    const weight = segment.trim().length || 1
+    for (let j = next.length - 1; j >= 0; j--) {
+      scores[i][j] = segment === next[j].segment
+        ? scores[i + 1][j + 1] + weight
+        : Math.max(scores[i + 1][j], scores[i][j + 1])
+    }
+  }
+
+  const kept = [new Set(), new Set()]
+  let shared = 0
+  for (let i = 0, j = 0; i < old.length && j < next.length;) {
+    if (old[i].segment === next[j].segment) {
+      if (old[i].isWordLike) shared += old[i].segment.length
+      kept[0].add(i++)
+      kept[1].add(j++)
+    } else if (scores[i + 1][j] >= scores[i][j + 1]) i++
+    else j++
+  }
+  const wordLength = tokens => tokens.reduce((length, token) => length + (token.isWordLike ? token.segment.length : 0), 0)
+  // If a line mostly changed, treating the pair as an edit can imply the wrong relationship.
+  if (!shared || shared * 2 < Math.max(...words.map(wordLength))) return null
+
+  const removedWords = new Set()
+  old.forEach(({ segment, isWordLike }, i) => {
+    if (isWordLike && !kept[0].has(i)) removedWords.add(segment)
+  })
+  if (next.some(({ segment, isWordLike }, i) => isWordLike && !kept[1].has(i) && removedWords.has(segment))) return null
+
+  return words.map((tokens, side) => {
+    const runs = []
+    tokens.forEach(({ segment }, i) => {
+      const changed = !kept[side].has(i)
+      const last = runs.at(-1)
+      if (last?.changed === changed) last.text += segment
+      else runs.push({ changed, text: segment })
+    })
+    return runs
+  })
+}
+
+function diffWordHighlights(rows) {
+  const highlights = new Map()
+  for (let i = 0; i < rows.length;) {
+    if (rows[i].kind !== 'remove') { i++; continue }
+    const start = i
+    while (rows[i]?.kind === 'remove') i++
+    const added = i
+    while (rows[i]?.kind === 'add') i++
+    // Avoid guessing which lines correspond when the replacement block changes size.
+    if (added - start !== i - added) continue
+    for (let old = start, next = added; old < added; old++, next++) {
+      const pair = replacementWords(rows[old].line.slice(1), rows[next].line.slice(1))
+      if (!pair) continue
+      highlights.set(rows[old].index, pair[0])
+      highlights.set(rows[next].index, pair[1])
+    }
+  }
+  return highlights
+}
+
+// `---`/`+++` are file headers only before a file's first hunk; inside one, `----` is a removed `---` line.
 function DiffField({ diff }) {
   let inHunk = false
+  const text = String(diff)
+  const rows = text.split('\n').map((line, index) => {
+    const noNewline = inHunk && line.startsWith('\\ ')
+    let kind = 'context'
+    if (line.startsWith('diff --git ')) {
+      inHunk = false
+      kind = 'meta'
+    } else if (line.startsWith('@@')) {
+      inHunk = true
+      kind = 'meta'
+    } else if (!inHunk) {
+      if (line.startsWith('---') || line.startsWith('+++')) kind = 'meta'
+    } else if (noNewline) {
+      kind = 'meta'
+    } else if (line.startsWith('+')) {
+      kind = 'add'
+    } else if (line.startsWith('-')) {
+      kind = 'remove'
+    }
+    return { kind, line, index, noNewline }
+  })
+  const highlights = DIFF_WORDS && text.length <= 100_000
+    ? diffWordHighlights(rows.filter(row => !row.noNewline)) : null
   return jsx(LabelledPre, {
     name: 'diff',
-    lines: String(diff).split('\n').map((line, i) => {
-      let kind = 'context'
-      if (line.startsWith('@@')) {
-        inHunk = true
-        kind = 'meta'
-      } else if (!inHunk) {
-        if (line.startsWith('---') || line.startsWith('+++')) kind = 'meta'
-      } else if (line.startsWith('+')) {
-        kind = 'add'
-      } else if (line.startsWith('-')) {
-        kind = 'remove'
-      }
+    lines: rows.map(({ kind, line }, i) => {
+      const runs = highlights?.get(i)
       return jsx('div', {
         'data-wr-diff-line': kind,
         className: 'px-1.5',
         style: DIFF_LINE[kind],
-        children: line || ' '
+        children: runs ? [line[0], ...runs.map(({ changed, text }, j) => changed ? jsx('span', {
+          'data-wr-diff-change': kind,
+          style: { background: `color-mix(in srgb, var(--ui-diff-${kind}-border, currentColor) 22%, transparent)` },
+          children: text
+        }, j) : text)] : line || ' '
       }, i)
     })
   })
