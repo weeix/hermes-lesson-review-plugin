@@ -3,6 +3,7 @@
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { JSDOM } from 'jsdom'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { decisionsDisabledError, httpError, loadPluginCopy } from './harness.mjs'
 
@@ -296,6 +297,73 @@ const dimmed = (html, label) => /opacity:0\.45;cursor:not-allowed/.test(buttonTa
     kinds['----'] === 'remove' && kinds['-old line'] === 'remove' && kinds['+new line'] === 'add'
     && kinds['--- before'] === 'meta' && kinds['+++ after'] === 'meta' && kinds[' context'] === 'context', JSON.stringify(kinds))
   check('diff colours: removed lines use the host remove colour', paneHtml.includes('var(--ui-diff-remove-foreground'))
+}
+{
+  const longPrefix = `${'a'.repeat(1100)} `
+  const manyWords = 'a '.repeat(70)
+  const beforeHeader = '--- a/skills/shared-notes-before.txt'
+  const afterHeader = '+++ b/skills/shared-notes-after.txt'
+  const noNewline = '\\ No newline at end of file'
+  const diff = [
+    '--- before', '+++ after', '@@ -1,8 +1,9 @@',
+    '-เก็บบันทึกไว้ 7 วัน', '+เก็บบันทึกไว้ 30 วัน',
+    ' context',
+    '-Keep short notes for 7 days.', '-Send a daily summary.',
+    '+Keep brief notes for 30 days.', '+Send a weekly summary.',
+    ' context',
+    '-Keep the same rule today.', '+Keep the same rule tomorrow.', '+An extra rule.',
+    ' context',
+    '-Go upstairs now.', '+Come downstairs later.',
+    '@@ -13 +14 @@', `-${longPrefix}old`, `+${longPrefix}new`,
+    '@@ -15 +16 @@', `-${manyWords}old`, `+${manyWords}new`,
+    '@@ -16 +17 @@', '-Keep cats dogs', '+Keep dogs cats',
+    '@@ -18 +19,0 @@', '-Retain logs for seven days.',
+    '@@ -24,0 +24 @@', '+Retain logs for thirty days.',
+    'diff --git a/skills/shared-notes-before.txt b/skills/shared-notes-after.txt', beforeHeader, afterHeader,
+    '@@ -1 +1 @@', '-Second file, old.', noNewline, '+Second file, new.'
+  ].join('\n')
+  const dom = new JSDOM()
+  function diffRows(diff) {
+    const queries = okQueries()
+    const ops = live.batchPreview.ops.map((op, i) => (i === 1 ? { ...op, diff } : op))
+    queries.set(batchKey, { data: { ...live.batchPreview, ops } })
+    const { paneHtml } = renderScenario(queries, { kind: 'skills', id: batch.id, created_at: batch.created_at })
+    const doc = new dom.window.DOMParser().parseFromString(paneHtml, 'text/html')
+    return new Map([...doc.querySelectorAll('[data-wr-diff-line]')].map(row => [row.textContent, row]))
+  }
+  const rows = diffRows(diff)
+  const highlights = row => [...row.querySelectorAll('[data-wr-diff-change]')]
+  for (const [name, lines] of [
+    ['only the number changes in Thai', [['-เก็บบันทึกไว้ 7 วัน', ['7']], ['+เก็บบันทึกไว้ 30 วัน', ['30']]]],
+    ['separate changes within adjacent replacement lines', [
+      ['-Keep short notes for 7 days.', ['short', '7']], ['+Keep brief notes for 30 days.', ['brief', '30']],
+      ['-Send a daily summary.', ['daily']], ['+Send a weekly summary.', ['weekly']]
+    ]],
+    ['a no-newline marker does not interrupt a replacement', [
+      ['-Second file, old.', ['old']], ['+Second file, new.', ['new']]
+    ]]
+  ]) {
+    check(`diff word emphasis: ${name}`, lines.every(([line, words]) => rows.has(line)
+      && JSON.stringify(highlights(rows.get(line)).map(mark => mark.textContent)) === JSON.stringify(words)))
+  }
+  for (const [name, lines] of [
+    ['uneven blocks', ['-Keep the same rule today.', '+Keep the same rule tomorrow.', '+An extra rule.']],
+    ['unrelated replacements', ['-Go upstairs now.', '+Come downstairs later.']],
+    ['very long lines', [`-${longPrefix}old`, `+${longPrefix}new`]],
+    ['lines with many tokens', [`-${manyWords}old`, `+${manyWords}new`]],
+    ['words that swap places', ['-Keep cats dogs', '+Keep dogs cats']],
+    ['changes in different hunks', ['-Retain logs for seven days.', '+Retain logs for thirty days.']]
+  ]) {
+    check(`diff word emphasis: ${name} keep line-only colouring`, lines.every(line => rows.has(line)
+      && highlights(rows.get(line)).length === 0))
+  }
+  check('diff word emphasis: later file headers stay metadata', [beforeHeader, afterHeader].every(line =>
+    rows.get(line)?.dataset.wrDiffLine === 'meta' && highlights(rows.get(line)).length === 0))
+  check('diff: the no-newline marker stays visible without change colouring', rows.get(noNewline)?.dataset.wrDiffLine === 'meta')
+  const largeRows = diffRows(`@@ -1,2 +1,2 @@\n ${'a'.repeat(100_000)}\n-Keep for 7 days.\n+Keep for 30 days.`)
+  check('diff word emphasis: oversized previews keep line-only colouring', ['-Keep for 7 days.', '+Keep for 30 days.']
+    .every(line => largeRows.has(line) && highlights(largeRows.get(line)).length === 0))
+  dom.window.close()
 }
 
 // Footer gating: why each decision button is disabled, on the wrapper's tooltip.
