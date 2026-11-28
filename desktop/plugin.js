@@ -182,76 +182,82 @@ const DIFF_LINE = {
   remove: { background: 'var(--ui-diff-remove-background, rgba(207, 45, 86, 0.12))', color: 'var(--ui-diff-remove-foreground, #91203c)' },
   meta: MUTED
 }
-const DIFF_WORDS = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'word' }) : null
+// Use Git's default word boundaries.
+function diffWords(rows) {
+  const words = []
+  for (const { line, index } of rows) {
+    if (line.length > 1001) return null
+    for (const token of line.slice(1).matchAll(/[^ \t\n\r\v\f]+/g)) {
+      if (words.length === 128) return null
+      const start = token.index + 1
+      words.push({ text: token[0], index, start, end: start + token[0].length })
+    }
+  }
+  return words
+}
 
-function replacementWords(before, after) {
-  if (Math.max(before.length, after.length) > 1000) return null
-  const words = [before, after].map(text => [...DIFF_WORDS.segment(text)])
-  const [old, next] = words
-  if (Math.max(old.length, next.length) > 128) return null
-
-  // Longest common subsequence, weighted by text length to favour shared words over repeated spaces.
+function markDiffWords(old, next, highlights) {
   const scores = Array.from({ length: old.length + 1 }, () => new Uint16Array(next.length + 1))
   for (let i = old.length - 1; i >= 0; i--) {
-    const { segment } = old[i]
-    const weight = segment.trim().length || 1
     for (let j = next.length - 1; j >= 0; j--) {
-      scores[i][j] = segment === next[j].segment
-        ? scores[i + 1][j + 1] + weight
+      scores[i][j] = old[i].text === next[j].text
+        ? scores[i + 1][j + 1] + 1
         : Math.max(scores[i + 1][j], scores[i][j + 1])
     }
   }
 
-  const kept = [new Set(), new Set()]
-  let shared = 0
-  for (let i = 0, j = 0; i < old.length && j < next.length;) {
-    if (old[i].segment === next[j].segment) {
-      if (old[i].isWordLike) shared += old[i].segment.length
-      kept[0].add(i++)
-      kept[1].add(j++)
-    } else if (scores[i + 1][j] >= scores[i][j + 1]) i++
-    else j++
+  function mark(word, previous) {
+    let ranges = highlights.get(word.index)
+    if (!ranges) highlights.set(word.index, ranges = [])
+    if (previous) ranges.at(-1).end = word.end
+    else ranges.push({ start: word.start, end: word.end })
   }
-  const wordLength = tokens => tokens.reduce((length, token) => length + (token.isWordLike ? token.segment.length : 0), 0)
-  // If a line mostly changed, treating the pair as an edit can imply the wrong relationship.
-  if (!shared || shared * 2 < Math.max(...words.map(wordLength))) return null
-
-  const removedWords = new Set()
-  old.forEach(({ segment, isWordLike }, i) => {
-    if (isWordLike && !kept[0].has(i)) removedWords.add(segment)
-  })
-  if (next.some(({ segment, isWordLike }, i) => isWordLike && !kept[1].has(i) && removedWords.has(segment))) return null
-
-  return words.map((tokens, side) => {
-    const runs = []
-    tokens.forEach(({ segment }, i) => {
-      const changed = !kept[side].has(i)
-      const last = runs.at(-1)
-      if (last?.changed === changed) last.text += segment
-      else runs.push({ changed, text: segment })
-    })
-    return runs
-  })
+  let oldChanged = false, nextChanged = false
+  for (let i = 0, j = 0; i < old.length || j < next.length;) {
+    if (i < old.length && j < next.length && old[i].text === next[j].text) {
+      oldChanged = nextChanged = false
+      i++
+      j++
+    } else if (j === next.length || (i < old.length && scores[i + 1][j] >= scores[i][j + 1])) {
+      mark(old[i], oldChanged && old[i - 1].index === old[i].index)
+      oldChanged = true
+      i++
+    } else {
+      mark(next[j], nextChanged && next[j - 1].index === next[j].index)
+      nextChanged = true
+      j++
+    }
+  }
 }
 
 function diffWordHighlights(rows) {
   const highlights = new Map()
   for (let i = 0; i < rows.length;) {
-    if (rows[i].kind !== 'remove') { i++; continue }
     const start = i
-    while (rows[i]?.kind === 'remove') i++
-    const added = i
-    while (rows[i]?.kind === 'add') i++
-    // Avoid guessing which lines correspond when the replacement block changes size.
-    if (added - start !== i - added) continue
-    for (let old = start, next = added; old < added; old++, next++) {
-      const pair = replacementWords(rows[old].line.slice(1), rows[next].line.slice(1))
-      if (!pair) continue
-      highlights.set(rows[old].index, pair[0])
-      highlights.set(rows[next].index, pair[1])
-    }
+    while (rows[i]?.kind === 'remove' || rows[i]?.kind === 'add') i++
+    if (start === i) { i++; continue }
+    const block = rows.slice(start, i)
+    const old = diffWords(block.filter(row => row.kind === 'remove'))
+    const next = diffWords(block.filter(row => row.kind === 'add'))
+    if (old && next) markDiffWords(old, next, highlights)
   }
   return highlights
+}
+
+function diffLineText(line, kind, ranges) {
+  if (!ranges) return line || ' '
+  const children = []
+  let offset = 0
+  for (const { start, end } of ranges) {
+    children.push(line.slice(offset, start), jsx('span', {
+      'data-wr-diff-change': kind,
+      style: { background: `color-mix(in srgb, var(--ui-diff-${kind}-border, currentColor) 22%, transparent)` },
+      children: line.slice(start, end)
+    }, start))
+    offset = end
+  }
+  children.push(line.slice(offset))
+  return children
 }
 
 // `---`/`+++` are file headers only before a file's first hunk; inside one, `----` is a removed `---` line.
@@ -278,23 +284,16 @@ function DiffField({ diff }) {
     }
     return { kind, line, index, noNewline }
   })
-  const highlights = DIFF_WORDS && text.length <= 100_000
+  const highlights = text.length <= 100_000
     ? diffWordHighlights(rows.filter(row => !row.noNewline)) : null
   return jsx(LabelledPre, {
     name: 'diff',
-    lines: rows.map(({ kind, line }, i) => {
-      const runs = highlights?.get(i)
-      return jsx('div', {
-        'data-wr-diff-line': kind,
-        className: 'px-1.5',
-        style: DIFF_LINE[kind],
-        children: runs ? [line[0], ...runs.map(({ changed, text }, j) => changed ? jsx('span', {
-          'data-wr-diff-change': kind,
-          style: { background: `color-mix(in srgb, var(--ui-diff-${kind}-border, currentColor) 22%, transparent)` },
-          children: text
-        }, j) : text)] : line || ' '
-      }, i)
-    })
+    lines: rows.map(({ kind, line, index }) => jsx('div', {
+      'data-wr-diff-line': kind,
+      className: 'px-1.5',
+      style: DIFF_LINE[kind],
+      children: diffLineText(line, kind, highlights?.get(index))
+    }, index))
   })
 }
 
