@@ -30,7 +30,7 @@ const applied = id => ({ id, subsystem: 'memory', status: 'applied' })
 // (apps/desktop/src/lib/query-client.ts), so react-query's default retries apply unless the plugin overrides them.
 // `sessionId`, `sessionProfile` and `draft` describe the focused chat for the composer stub (sdk-stub.mjs).
 // `writeClipboard` answers ctx.os.writeClipboard; null = a Desktop without ctx.os.
-// `wrap(paneElement)` places the pane inside host markup, e.g. the pane body's context menu.
+// `wrap(paneElement)` places the pane inside host markup.
 async function mountPane({ writeClipboard = async () => true, decide = applied, items = ITEMS, listError = null, decisionsEnabled = true, previewOf = null,
   needsReview = NO_REVIEW, sessionId = null, storedSessionId = null, sessionProfile = undefined, sessionOwner = undefined, draft = '', setDraftOk = true,
   withBadge = false, withPane = true, wrap = null } = {}) {
